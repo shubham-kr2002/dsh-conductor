@@ -10,6 +10,7 @@ import { SqliteEventRepository } from '../storage/event-repository.js';
 import { SqliteDecisionRepository } from '../storage/decision-repository.js';
 import { SqliteTakeoverRepository } from '../storage/takeover-repository.js';
 import { SqliteHandoffRepository } from '../storage/handoff-repository.js';
+import { decisionStatusLabel } from '../summary/status-language.js';
 import { DecisionQueue } from '../decision/decision-queue.js';
 import { TakeoverService } from '../takeover/takeover-service.js';
 import { HandoffService } from '../handoff/handoff-service.js';
@@ -209,12 +210,25 @@ export function renderDecisionDetail(d: ConductorDecision): string {
   const lines = [
     `Decision ${d.id}`,
     `  Title:   ${d.title}`,
-    `  Status:  ${d.status}`,
+    `  Status:  ${decisionStatusLabel(d.status)}`,
     `  Impact:  ${d.impact} | Urgency: ${d.urgency} | Confidence: ${String(d.confidence)}`,
     `  Question: ${d.question}`,
     '  Context:',
     ...d.context.split('\n').map((l) => `    ${l}`),
   ];
+  if (d.why) {
+    const w = d.why;
+    lines.push('  Why this interrupts you:');
+    lines.push(`    WHAT           ${w.what}`);
+    lines.push(`    WHY NOW        ${w.whyNow}`);
+    lines.push(`    IMPACT         ${w.impact}`);
+    lines.push(`    REVERSIBILITY  ${w.reversibility}${w.reversibilityNote ? ` — ${w.reversibilityNote}` : ''}`);
+    lines.push(`    EVIDENCE       rules: ${w.evidence.ruleIds.join(', ') || '—'} | blast: ${w.evidence.blastRadius} | ambiguity: ${Math.round(w.evidence.ambiguity * 100)}% | task-aligned: ${w.evidence.taskAligned ? 'yes' : 'no'}`);
+    if (w.evidence.affectedResources.length > 0) lines.push(`                   touches: ${w.evidence.affectedResources.join(', ')}`);
+    if (w.recommendation) lines.push(`    RECOMMENDATION ${w.recommendation}`);
+    lines.push(`    IF YES         ${w.consequences.approve}`);
+    lines.push(`    IF NO          ${w.consequences.reject}`);
+  }
   if (d.options.length > 0) {
     lines.push('  Options:');
     for (const opt of d.options) {

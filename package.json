@@ -10,12 +10,18 @@
   },
   "type": "module",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/copy-ui-assets.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "tsc && node --test 'dist/tests/**/*.test.js'",
+    "test": "tsc && node scripts/copy-ui-assets.mjs && node --test 'dist/tests/**/*.test.js'",
     "lint": "tsc --noEmit"
   },
-  "keywords": ["dsh", "conductor", "cordis", "agent", "control-plane"],
+  "keywords": [
+    "dsh",
+    "conductor",
+    "cordis",
+    "agent",
+    "control-plane"
+  ],
   "author": "Antigravity",
   "license": "MIT",
   "devDependencies": {

@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Conductor — mission control</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header id="l1">
+    <div class="brand">
+      <span class="mark">◆</span> CONDUCTOR
+      <span class="live" id="live-dot" title="event stream"></span>
+    </div>
+    <div class="attention-line" id="attention-line">connecting…</div>
+    <div class="budget" id="budget-line"></div>
+    <div class="l1-actions">
+      <button id="btn-away" class="ghost" title="Mark the moment you leave; the summary on return starts here">Mark away</button>
+      <button id="btn-refresh" class="ghost" title="Re-read the control plane">↻</button>
+    </div>
+  </header>
+
+  <main>
+    <section id="executions" aria-label="Executions">
+      <h2 class="sec">Agents in flight</h2>
+      <div id="cards" class="stack"></div>
+    </section>
+    <section id="queue" aria-label="Decision queue">
+      <h2 class="sec">Needs your judgment <span id="queue-count" class="count"></span></h2>
+      <div id="decision-list" class="stack"></div>
+      <div id="quality-strip" class="quality"></div>
+    </section>
+  </main>
+
+  <div id="overlay" hidden>
+    <div id="detail" role="dialog" aria-modal="true"></div>
+  </div>
+
+  <div id="toast" hidden></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
