@@ -10,6 +10,16 @@ import type { IExecutionRepository } from '../storage/execution-repository.js';
 import type { IEventRepository } from '../storage/event-repository.js';
 import type { ConductorEvent } from '../types/event.js';
 import type { ExecutionState, ExecutionStatus } from '../types/execution.js';
+import { PolicyEngine } from '../policy/policy-engine.js';
+import {
+  AttentionEngine,
+  createAttentionContext,
+  type AttentionContext,
+} from '../attention/attention-engine.js';
+import type {
+  AttentionClassification,
+  AttentionClassificationInput,
+} from '../types/attention.js';
 
 export interface ExecutionStatusSummary {
   executionId: string;
@@ -24,16 +34,46 @@ export interface ExecutionStatusSummary {
   risksCount: number;
   completedWorkCount: number;
   updatedAt: number;
+  pendingAttention: PendingAttentionItem[];
+  attentionRequired: boolean;
+}
+
+export interface PendingAttentionItem {
+  eventId: string;
+  type: string;
+  level: 'DECISION' | 'CRITICAL';
+  action: string;
+  rationale: string;
+  timestamp: number;
 }
 
 export class ExecutionManager {
   private _activeExecutionId?: string;
   private readonly _subscribers: Array<(event: ConductorEvent) => void> = [];
+  private readonly _attentionContexts: Map<string, AttentionContext> = new Map();
+  public readonly policyEngine: PolicyEngine;
+  public readonly attentionEngine: AttentionEngine;
+  /** When true, PAUSE classifications transition the execution to PAUSED. */
+  public enforceAttention = true;
 
   constructor(
     public readonly executionRepo: IExecutionRepository,
     public readonly eventRepo: IEventRepository,
-  ) {}
+    policyEngine?: PolicyEngine,
+    attentionEngine?: AttentionEngine,
+  ) {
+    this.policyEngine = policyEngine ?? new PolicyEngine();
+    this.attentionEngine = attentionEngine ?? new AttentionEngine();
+  }
+
+  private attentionContext(executionId: string): AttentionContext {
+    let ctx = this._attentionContexts.get(executionId);
+    if (!ctx) {
+      ctx = createAttentionContext();
+      this._attentionContexts.set(executionId, ctx);
+    }
+    return ctx;
+  }
 
   public get activeExecutionId(): string | undefined {
     return this._activeExecutionId;
@@ -94,21 +134,174 @@ export class ExecutionManager {
   }
 
   /**
-   * Ingest and process a ConductorEvent
+   * Ingest and process a ConductorEvent:
+   * classify through policy + attention, persist, mutate execution state,
+   * then enforce the attention action (pause for PAUSE classifications).
    */
-  public processEvent(event: ConductorEvent): void {
-    // 1. Persist the event
-    this.eventRepo.save(event);
-
-    // 2. Fetch execution and apply updates
+  public processEvent(event: ConductorEvent): AttentionClassification | null {
     const execution = this.executionRepo.findById(event.executionId);
+
+    // 1. Classify (deterministic)
+    let classification: AttentionClassification | null = null;
     if (execution) {
-      this.applyEventToExecution(execution, event);
+      const ctx = this.attentionContext(event.executionId);
+      const isErrorLike =
+        event.type === 'test.failed' ||
+        (event.type === 'command.completed' &&
+          ((event.payload.exitCode as number | undefined) ?? 0) !== 0);
+      this.attentionEngine.updateContextFromEvent(ctx, event.type, isErrorLike);
+      classification = this.attentionEngine.classify(
+        this.deriveAttentionInput(execution, event),
+        ctx,
+      );
+    }
+
+    // 2. Persist the event (classification travels in metadata)
+    const enriched: ConductorEvent = classification
+      ? {
+          ...event,
+          metadata: {
+            ...event.metadata,
+            attention: {
+              level: classification.level,
+              action: classification.action,
+              ruleId: classification.ruleId,
+              rationale: classification.rationale,
+              needsLlmReview: classification.needsLlmReview === true,
+            },
+          },
+        }
+      : event;
+    this.eventRepo.save(enriched);
+
+    // 3. Apply event and attention action to execution state
+    if (execution && classification) {
+      this.applyEventToExecution(execution, enriched);
+      this.applyAttentionAction(execution, classification);
       this.executionRepo.save(execution);
     }
 
-    // 3. Notify subscribers
-    this.notify(event);
+    // 4. Notify subscribers
+    this.notify(enriched);
+    return classification;
+  }
+
+  /** Map an event to attention-engine input using execution state + policy engine. */
+  private deriveAttentionInput(
+    execution: Execution,
+    event: ConductorEvent,
+  ): AttentionClassificationInput {
+    const payload = event.payload as Record<string, unknown>;
+    let consequence: AttentionClassificationInput['consequence'] = 'low';
+    let reversibility: AttentionClassificationInput['reversibility'] = 'reversible';
+    let uncertainty = 0.1;
+    let policyImpact: AttentionClassificationInput['policyImpact'];
+
+    switch (event.type) {
+      case 'tool.called': {
+        consequence = (payload.consequence as AttentionClassificationInput['consequence']) ?? 'medium';
+        reversibility = (payload.reversibility as AttentionClassificationInput['reversibility']) ?? 'unknown';
+        const evalResult = this.policyEngine.evaluateToolExecution(
+          String(payload.toolName ?? ''),
+          (payload.arguments as Record<string, unknown>) ?? {},
+        );
+        policyImpact = evalResult.action;
+        if (evalResult.action === 'deny') {
+          consequence = 'critical';
+        } else if (evalResult.action === 'require_approval' && consequence !== 'critical') {
+          consequence = 'high';
+        }
+        break;
+      }
+      case 'command.started': {
+        const evalResult = this.policyEngine.evaluateShellCommand(String(payload.command ?? ''));
+        policyImpact = evalResult.action;
+        if (evalResult.action === 'deny') {
+          consequence = 'critical';
+        } else if (evalResult.action === 'require_approval') {
+          consequence = 'high';
+        } else {
+          consequence = 'medium';
+        }
+        reversibility = 'unknown';
+        break;
+      }
+      case 'command.completed': {
+        const exitCode = (payload.exitCode as number | undefined) ?? 0;
+        consequence = exitCode === 0 ? 'low' : 'medium';
+        uncertainty = exitCode === 0 ? 0.1 : 0.3;
+        break;
+      }
+      case 'file.changed': {
+        const action = String(payload.action ?? 'modified');
+        consequence = action === 'deleted' ? 'high' : 'medium';
+        reversibility = action === 'deleted' ? 'unknown' : 'reversible';
+        break;
+      }
+      case 'test.failed': {
+        consequence = 'medium';
+        uncertainty = 0.3;
+        break;
+      }
+      case 'agent.question': {
+        consequence = (payload.consequence as AttentionClassificationInput['consequence']) ?? 'medium';
+        uncertainty = payload.recommendation ? 0.3 : 0.7;
+        break;
+      }
+      case 'agent.blocked': {
+        consequence = 'high';
+        uncertainty = 0.8;
+        break;
+      }
+      default:
+        break;
+    }
+
+    const taskAligned = this.isTaskAligned(execution, event);
+
+    return {
+      eventType: event.type,
+      consequence,
+      reversibility,
+      taskAligned,
+      uncertainty,
+      policyImpact,
+      confidence: event.source === 'agent' ? 0.9 : 1,
+    };
+  }
+
+  /** Heuristic task alignment: paths within the workspace root or goal keywords. */
+  private isTaskAligned(execution: Execution, event: ConductorEvent): boolean {
+    const payload = event.payload as Record<string, unknown>;
+    const filePath = (payload.filePath as string) ?? (payload.file_path as string);
+    if (filePath) {
+      return (
+        filePath.startsWith(execution.workspace.root) || !filePath.startsWith('/')
+      );
+    }
+    const command = (payload.command as string) ?? '';
+    const goalWords = execution.goal.toLowerCase().split(/\s+/).filter((w) => w.length > 4);
+    if (command && goalWords.some((w) => command.toLowerCase().includes(w))) {
+      return true;
+    }
+    return true;
+  }
+
+  /** Enforce the attention action on execution lifecycle. */
+  private applyAttentionAction(
+    execution: Execution,
+    classification: AttentionClassification,
+  ): void {
+    if (!this.enforceAttention) return;
+    if (classification.action !== 'PAUSE') return;
+    if (execution.isTerminal()) return;
+    if (execution.status === 'PAUSED' || execution.status === 'BLOCKED') return;
+
+    if (execution.status === 'RUNNING' || execution.status === 'STARTING') {
+      execution.pause(classification.rationale, 'attention');
+    } else if (execution.status === 'WAITING') {
+      execution.pause(`Attention required: ${classification.rationale}`, 'attention');
+    }
   }
 
   private applyEventToExecution(execution: Execution, event: ConductorEvent): void {
@@ -196,6 +389,7 @@ export class ExecutionManager {
     const durationSeconds = Math.round(
       (state.metrics.durationMs || (Date.now() - state.timestamps.createdAt)) / 1000,
     );
+    const pendingAttention = this.getPendingAttention(state.executionId);
 
     return {
       executionId: state.executionId,
@@ -210,7 +404,53 @@ export class ExecutionManager {
       risksCount: state.risks.length,
       completedWorkCount: state.completedWork.length,
       updatedAt: state.timestamps.updatedAt,
+      pendingAttention,
+      attentionRequired:
+        pendingAttention.length > 0 ||
+        state.status === 'PAUSED' ||
+        state.status === 'BLOCKED' ||
+        state.status === 'WAITING',
     };
+  }
+
+  /**
+   * Scan persisted event classifications for unresolved DECISION/CRITICAL items.
+   * An item counts as pending when it is not older than the execution's last
+   * resume/continue transition.
+   */
+  public getPendingAttention(executionId?: string): PendingAttentionItem[] {
+    const id = executionId ?? this.getActiveExecution()?.id;
+    if (!id) return [];
+    const exec = this.executionRepo.findById(id);
+    if (!exec) return [];
+
+    const lastResume = exec.transitions
+      .filter(
+        (t) =>
+          t.to === 'RUNNING' &&
+          (t.actor === 'human' || t.metadata?.attentionResolved === true),
+      )
+      .reduce((max, t) => Math.max(max, t.timestamp), 0);
+
+    const events = this.eventRepo.listByExecution(id);
+    const pending: PendingAttentionItem[] = [];
+    for (const evt of events) {
+      const attention = evt.metadata?.attention as
+        | { level?: string; action?: string; rationale?: string }
+        | undefined;
+      if (!attention) continue;
+      if (attention.level !== 'DECISION' && attention.level !== 'CRITICAL') continue;
+      if (evt.timestamp <= lastResume) continue;
+      pending.push({
+        eventId: evt.id,
+        type: evt.type,
+        level: attention.level as 'DECISION' | 'CRITICAL',
+        action: attention.action ?? 'PAUSE',
+        rationale: attention.rationale ?? '',
+        timestamp: evt.timestamp,
+      });
+    }
+    return pending;
   }
 
   public getHistory(

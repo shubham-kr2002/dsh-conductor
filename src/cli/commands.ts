@@ -46,8 +46,18 @@ export function renderStatus(summary: ReturnType<ExecutionManager['getStatus']>)
     `Metrics:             Tools: ${summary.toolCallCount} | Files: ${summary.filesModifiedCount} | Completed Tasks: ${summary.completedWorkCount}`,
     `Pending Decisions:   ${summary.pendingDecisionsCount}`,
     `Known Risks:         ${summary.risksCount}`,
-    '=================================================================',
+    `Needs You:           ${summary.attentionRequired ? 'YES — see pending items below' : 'no'}`,
   ];
+
+  if (summary.pendingAttention.length > 0) {
+    lines.push('-----------------------------------------------------------------');
+    lines.push('ITEMS REQUIRING YOUR JUDGMENT:');
+    for (const item of summary.pendingAttention) {
+      lines.push(`  [${item.level}] ${item.type} — ${item.rationale}`);
+    }
+  }
+
+  lines.push('=================================================================');
   return lines.join('\n');
 }
 
@@ -102,7 +112,11 @@ export function renderHistory(events: ConductorEvent[]): string {
         break;
     }
 
-    lines.push(`[${timeStr}] ${evt.type.padEnd(20)} ${detail}`);
+    const attention = evt.metadata?.attention as { level?: string } | undefined;
+    const tag = attention
+      ? ` {${attention.level === 'SILENT' ? '·' : attention.level === 'BACKGROUND' ? '•' : attention.level === 'DECISION' ? '!' : '✱'}}`
+      : '';
+    lines.push(`[${timeStr}] ${evt.type.padEnd(20)} ${detail}${tag}`);
   }
 
   lines.push('=================================================================');

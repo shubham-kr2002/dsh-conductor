@@ -1,0 +1,292 @@
+/**
+ * Conductor Policy Engine
+ *
+ * Independent, extensible policy evaluator for filesystem, shell,
+ * dependencies, git, deployment, credentials, and production resources.
+ */
+
+import type {
+  PolicyCategory,
+  PolicyAction,
+  PolicyRule,
+  PolicyEvaluationResult,
+} from '../types/policy.js';
+
+export const DEFAULT_POLICY_RULES: PolicyRule[] = [
+  // 1. Credentials & Secrets
+  {
+    id: 'deny-secrets-access',
+    name: 'Deny Secret Keys Access',
+    category: 'credentials',
+    description: 'Prohibit reading or modifying private keys, credentials, or production tokens',
+    action: 'deny',
+    match: {
+      patterns: [
+        '**/.env*',
+        '**/id_rsa*',
+        '**/id_ed25519*',
+        '**/.aws/credentials',
+        '**/*.pem',
+        '**/*.key',
+      ],
+    },
+    reason: 'Access to private credentials or secrets is prohibited',
+  },
+
+  // 2. Destructive Filesystem Operations
+  {
+    id: 'require-approval-root-delete',
+    name: 'Destructive Shell Operations',
+    category: 'shell',
+    description: 'Pause and require approval for destructive commands',
+    action: 'require_approval',
+    match: {
+      commands: [
+        'rm -rf /',
+        'rm -rf *',
+        'rm -rf ~',
+        'mkfs',
+        'dd if=',
+        ':(){ :|:& };:',
+        'chmod -R 777 /',
+        'sudo rm',
+      ],
+    },
+    reason: 'Destructive system-level command detected',
+  },
+
+  // 3. Dangerous Git Operations
+  {
+    id: 'require-approval-git-force',
+    name: 'Force Git Operations',
+    category: 'git',
+    description: 'Require approval before destructive git history rewrites or force pushes',
+    action: 'require_approval',
+    match: {
+      commands: [
+        'git push --force',
+        'git push -f',
+        'git reset --hard',
+        'git clean -fdx',
+      ],
+    },
+    reason: 'Irreversible Git rewrite detected',
+  },
+
+  // 4. Production Deployments
+  {
+    id: 'require-approval-deployment',
+    name: 'Production Deployments',
+    category: 'deployment',
+    description: 'Require approval for cloud or container deployments',
+    action: 'require_approval',
+    match: {
+      commands: [
+        'kubectl delete',
+        'kubectl apply -f',
+        'terraform apply',
+        'terraform destroy',
+        'docker system prune -a',
+        'helm uninstall',
+        'serverless deploy',
+      ],
+    },
+    reason: 'Deployment or cloud resource mutation detected',
+  },
+
+  // 5. System Administration Privileges
+  {
+    id: 'deny-sudo',
+    name: 'Sudo Privileges',
+    category: 'shell',
+    description: 'Deny privileged superuser execution in autonomous mode',
+    action: 'deny',
+    match: {
+      commands: ['sudo ', 'su -', 'doas '],
+    },
+    reason: 'Superuser execution is disallowed for autonomous agents',
+  },
+
+  // 6. Safe Operations
+  {
+    id: 'allow-routine-dev',
+    name: 'Routine Development Commands',
+    category: 'shell',
+    description: 'Allow standard test, build, lint, and git status commands',
+    action: 'allow',
+    match: {
+      commands: [
+        'git status',
+        'git diff',
+        'git log',
+        'git branch',
+        'npm test',
+        'pnpm test',
+        'yarn test',
+        'npm run build',
+        'pnpm run build',
+        'tsc',
+        'ls',
+        'pwd',
+        'echo',
+        'node --test',
+      ],
+    },
+    reason: 'Routine non-destructive development command',
+  },
+];
+
+export class PolicyEngine {
+  private readonly _rules: Map<string, PolicyRule> = new Map();
+
+  constructor(initialRules: PolicyRule[] = DEFAULT_POLICY_RULES) {
+    for (const rule of initialRules) {
+      this.addRule(rule);
+    }
+  }
+
+  public addRule(rule: PolicyRule): void {
+    this._rules.set(rule.id, rule);
+  }
+
+  public removeRule(ruleId: string): boolean {
+    return this._rules.delete(ruleId);
+  }
+
+  public getRules(category?: PolicyCategory): PolicyRule[] {
+    const rules = Array.from(this._rules.values());
+    if (category) {
+      return rules.filter((r) => r.category === category);
+    }
+    return rules;
+  }
+
+  /**
+   * Evaluate a shell command against active policies
+   */
+  public evaluateShellCommand(command: string): PolicyEvaluationResult {
+    const trimmed = command.trim();
+    const lower = trimmed.toLowerCase();
+
+    // 1. Check deny rules first (any category that declares command matches)
+    for (const rule of this._rules.values()) {
+      if (rule.action === 'deny' && rule.match.commands) {
+        if (rule.match.commands.some((cmd) => lower.includes(cmd.toLowerCase()))) {
+          return {
+            action: 'deny',
+            ruleId: rule.id,
+            category: rule.category,
+            reason: rule.reason ?? `Violated policy: ${rule.name}`,
+          };
+        }
+      }
+    }
+
+    // 2. Check require_approval rules
+    for (const rule of this._rules.values()) {
+      if ((rule.category === 'shell' || rule.category === 'git' || rule.category === 'deployment') && rule.action === 'require_approval') {
+        if (rule.match.commands?.some((cmd) => lower.includes(cmd.toLowerCase()))) {
+          return {
+            action: 'require_approval',
+            ruleId: rule.id,
+            category: rule.category,
+            reason: rule.reason ?? `Requires approval: ${rule.name}`,
+          };
+        }
+      }
+    }
+
+    // 3. Check explicit allow rules
+    for (const rule of this._rules.values()) {
+      if (rule.action === 'allow' && rule.match.commands?.some((cmd) => lower.startsWith(cmd.toLowerCase()))) {
+        return {
+          action: 'allow',
+          ruleId: rule.id,
+          category: rule.category,
+          reason: rule.reason ?? `Allowed by policy: ${rule.name}`,
+        };
+      }
+    }
+
+    // Default: allow standard workspace shell execution
+    return {
+      action: 'allow',
+      category: 'shell',
+      reason: 'No restrictive policy matched',
+    };
+  }
+
+  /**
+   * Evaluate a file path access
+   */
+  public evaluateFilePath(filePath: string, operation: 'read' | 'write' | 'delete'): PolicyEvaluationResult {
+    const lower = filePath.toLowerCase();
+
+    // Check credentials / secrets
+    for (const rule of this._rules.values()) {
+      if (rule.category === 'credentials' && rule.action === 'deny') {
+        const matches = rule.match.patterns?.some((pat) => {
+          const clean = pat.replace(/\*\*\//g, '').replace(/\*/g, '');
+          return lower.includes(clean.toLowerCase());
+        });
+        if (matches) {
+          return {
+            action: 'deny',
+            ruleId: rule.id,
+            category: 'credentials',
+            reason: rule.reason ?? `Prohibited access to credentials in ${filePath}`,
+          };
+        }
+      }
+    }
+
+    // Prohibit modifying system directories
+    if (operation === 'write' || operation === 'delete') {
+      if (
+        filePath.startsWith('/etc/') ||
+        filePath.startsWith('/usr/') ||
+        filePath.startsWith('/bin/') ||
+        filePath.startsWith('/sbin/') ||
+        filePath.startsWith('/boot/')
+      ) {
+        return {
+          action: 'deny',
+          category: 'filesystem',
+          reason: `Attempted modification of system directory: ${filePath}`,
+        };
+      }
+    }
+
+    return {
+      action: 'allow',
+      category: 'filesystem',
+      reason: 'Standard workspace file access',
+    };
+  }
+
+  /**
+   * Evaluate any tool execution against policy
+   */
+  public evaluateToolExecution(toolName: string, args: Record<string, unknown>): PolicyEvaluationResult {
+    if (toolName === 'bash' || toolName === 'pwsh') {
+      const cmd = (args.command as string) ?? '';
+      return this.evaluateShellCommand(cmd);
+    }
+
+    if (toolName === 'write' || toolName === 'edit') {
+      const path = (args.file_path as string) ?? (args.path as string) ?? '';
+      return this.evaluateFilePath(path, 'write');
+    }
+
+    if (toolName === 'read') {
+      const path = (args.file_path as string) ?? (args.path as string) ?? '';
+      return this.evaluateFilePath(path, 'read');
+    }
+
+    return {
+      action: 'allow',
+      category: 'production_resources',
+      reason: 'Standard tool execution',
+    };
+  }
+}
