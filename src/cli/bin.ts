@@ -145,19 +145,78 @@ program
   });
 
 program
-  .command('continue <executionId>')
-  .description('Return control to the agent after a take-over (resumes execution)')
-  .option('--by <who>', 'Who is resuming', 'developer')
+  .command('take-over <executionId>')
+  .description('Freeze the agent, capture workspace, and show a continuation brief')
+  .option('--by <who>', 'Who is taking over', 'developer')
+  .option('-n, --notes <text>', 'Why you are taking over (recorded with the intervention)')
   .action((executionId, options) => {
-    const { manager, db } = createManager();
+    const { takeover, manager, db } = createManager();
+    try {
+      const result = takeover.takeOver(executionId, { actor: options.by, notes: options.notes });
+      console.log(result.brief);
+      console.log(renderStatus(manager.getStatus(executionId)));
+      console.log(
+        '\nWorkspace frozen. Make your edits, then run:\n' +
+          `  conductor continue ${executionId} --notes "what you changed and why"`,
+      );
+    } catch (err) {
+      console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    } finally {
+      db.close();
+    }
+  });
+
+program
+  .command('brief <executionId>')
+  .description('Show the current continuation brief for a taken-over execution')
+  .action((executionId) => {
+    const { takeover, db } = createManager();
+    try {
+      const current = takeover.currentBrief(executionId);
+      if (!current) {
+        console.log('No active take-over for this execution.');
+      } else {
+        console.log(current.brief);
+      }
+    } catch (err) {
+      console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    } finally {
+      db.close();
+    }
+  });
+
+program
+  .command('continue <executionId>')
+  .description('Return control to the agent: reconcile workspace edits and resume')
+  .option('--by <who>', 'Who is resuming', 'developer')
+  .option('-n, --notes <text>', 'Guidance for the agent on what you changed')
+  .action((executionId, options) => {
+    const { takeover, manager, db } = createManager();
     try {
       const exec = manager.getExecution(executionId);
       if (exec.status === 'TAKEN_OVER') {
-        exec.continueFromTakeOver(options.by, 'Returned control via CLI');
+        const result = takeover.continue(executionId, { actor: options.by, notes: options.notes });
+        const m = result.modifications;
+        const nChanged = m.created.length + m.modified.length + m.deleted.length;
+        console.log(
+          nChanged === 0
+            ? 'No workspace changes detected while taken over.'
+            : `Reconciled ${String(nChanged)} human change(s): ` +
+              [
+                m.created.length > 0 ? `+${String(m.created.length)} created` : '',
+                m.modified.length > 0 ? `~${String(m.modified.length)} modified` : '',
+                m.deleted.length > 0 ? `-${String(m.deleted.length)} deleted` : '',
+              ]
+                .filter((s) => s !== '')
+                .join(', '),
+        );
+        console.log(result.brief);
       } else {
         exec.resume('Resumed via CLI', 'human');
+        manager.executionRepo.save(exec);
       }
-      manager.executionRepo.save(exec);
       console.log(renderStatus(manager.getStatus(executionId)));
     } catch (err) {
       console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);

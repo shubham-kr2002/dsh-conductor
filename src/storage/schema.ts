@@ -103,4 +103,20 @@ CREATE TABLE IF NOT EXISTS handoffs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_handoffs_exec_id ON handoffs(execution_id);
+
+CREATE TABLE IF NOT EXISTS takeovers (
+  id TEXT PRIMARY KEY,
+  execution_id TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  status TEXT NOT NULL,
+  snapshot_json TEXT NOT NULL,
+  continuation_json TEXT NOT NULL,
+  human_modifications_json TEXT,
+  notes TEXT,
+  started_at INTEGER NOT NULL,
+  returned_at INTEGER,
+  FOREIGN KEY(execution_id) REFERENCES executions(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_takeovers_exec_id ON takeovers(execution_id, started_at DESC);
 `;

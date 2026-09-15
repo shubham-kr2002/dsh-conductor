@@ -8,7 +8,9 @@ import { ConductorDatabase } from '../storage/database.js';
 import { SqliteExecutionRepository } from '../storage/execution-repository.js';
 import { SqliteEventRepository } from '../storage/event-repository.js';
 import { SqliteDecisionRepository } from '../storage/decision-repository.js';
+import { SqliteTakeoverRepository } from '../storage/takeover-repository.js';
 import { DecisionQueue } from '../decision/decision-queue.js';
+import { TakeoverService } from '../takeover/takeover-service.js';
 import { ExecutionManager } from '../manager/execution-manager.js';
 import type { ConductorEvent } from '../types/event.js';
 import type { ConductorDecision } from '../types/decision.js';
@@ -25,20 +27,43 @@ export function resolveDbPath(): string {
 export interface ConductorRuntime {
   manager: ExecutionManager;
   decisions: DecisionQueue;
+  takeover: TakeoverService;
+  execRepo: SqliteExecutionRepository;
+  eventRepo: SqliteEventRepository;
   decisionRepo: SqliteDecisionRepository;
+  takeoverRepo: SqliteTakeoverRepository;
   db: ConductorDatabase;
 }
 
-export function createManager(dbPath?: string): ConductorRuntime {
+export function createRuntime(dbPath?: string): ConductorRuntime {
   const path = dbPath ?? resolveDbPath();
   const db = new ConductorDatabase({ path });
   const execRepo = new SqliteExecutionRepository(db);
   const eventRepo = new SqliteEventRepository(db);
   const decisionRepo = new SqliteDecisionRepository(db);
+  const takeoverRepo = new SqliteTakeoverRepository(db);
   const decisions = new DecisionQueue(decisionRepo, execRepo);
   const manager = new ExecutionManager(execRepo, eventRepo, undefined, undefined, decisions);
-  return { manager, decisions, decisionRepo, db };
+  const takeover = new TakeoverService({
+    executionRepo: execRepo,
+    eventRepo,
+    decisionRepo,
+    takeoverRepo,
+  });
+  return {
+    manager,
+    decisions,
+    takeover,
+    execRepo,
+    eventRepo,
+    decisionRepo,
+    takeoverRepo,
+    db,
+  };
 }
+
+/** Backwards-compatible alias used by the CLI. */
+export const createManager = createRuntime;
 
 export function renderStatus(summary: ReturnType<ExecutionManager['getStatus']>): string {
   const lines: string[] = [

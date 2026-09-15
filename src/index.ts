@@ -9,5 +9,6 @@ export * from './adapter/index.js';
 export * from './policy/index.js';
 export * from './attention/index.js';
 export * from './decision/index.js';
+export * from './takeover/index.js';
 export * from './manager/index.js';
 export * from './cli/index.js';
