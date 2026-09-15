@@ -499,7 +499,11 @@ export async function runDemoScenario(opts: DemoOptions = {}): Promise<DemoResul
       [forceDecision.id, DEMO_STORY.decisionSlots.force],
     ]);
     for (const d of decisionRepo.list({ executionId: exec.id })) {
-      decisionRepo.save(rescheduleDecision(d, base, slots.get(d.id)));
+      const shifted = rescheduleDecision(d, base, slots.get(d.id));
+      // The decision upsert never rewrites created_at, so shift the row by
+      // delete + reinsert (the repository's only full-rewrite path).
+      decisionRepo.delete(d.id);
+      decisionRepo.save(shifted);
     }
 
     // Persist the observable decision-quality facts (post-hoc, derived).

@@ -6,6 +6,8 @@ import { SqliteEventRepository } from '../../src/storage/event-repository.js';
 import { ExecutionManager } from '../../src/manager/execution-manager.js';
 import { EventAdapter } from '../../src/adapter/event-adapter.js';
 import { renderStatus, renderHistory } from '../../src/cli/commands.js';
+import { SqliteDecisionRepository } from '../../src/storage/decision-repository.js';
+import { DecisionQueue } from '../../src/decision/decision-queue.js';
 
 describe('ExecutionManager & CLI', () => {
   function setup() {
@@ -119,5 +121,40 @@ describe('ExecutionManager & CLI', () => {
     assert.ok(historyText.includes('CONDUCTOR EXECUTION HISTORY'));
     assert.ok(historyText.includes('execution.started'));
     assert.ok(historyText.includes('tool.called'));
+  });
+});
+
+describe('pause-decision bookkeeping (Phase 9 regression)', () => {
+  test('paused decision survives the final save of the event pipeline', () => {
+    const db = new ConductorDatabase({ path: ':memory:' });
+    try {
+      const execRepo = new SqliteExecutionRepository(db);
+      const decisionRepo = new SqliteDecisionRepository(db);
+      const decisions = new DecisionQueue(decisionRepo, execRepo);
+      const manager = new ExecutionManager(
+        execRepo,
+        new SqliteEventRepository(db),
+        undefined,
+        undefined,
+        decisions,
+      );
+      const exec = manager.createExecution({ goal: 'g', workspaceRoot: '/srv' });
+      exec.start();
+      execRepo.save(exec);
+      for (const evt of EventAdapter.adaptToolCall(exec.id, {
+        callId: 'z1',
+        name: 'bash',
+        arguments: { command: 'git push --force origin main' },
+      })) {
+        manager.processEvent(evt);
+      }
+      const persisted = execRepo.findById(exec.id)!;
+      assert.equal(persisted.decisions.length, 1, 'decision reference persisted');
+      assert.equal(persisted.metrics.decisionCount, 1, 'decision count survived');
+      assert.equal(persisted.status, 'PAUSED');
+      assert.equal(persisted.decisions[0], decisions.pending()[0]!.id, 'reference points at the queued decision');
+    } finally {
+      db.close();
+    }
   });
 });

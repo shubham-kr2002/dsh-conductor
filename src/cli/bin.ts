@@ -18,6 +18,7 @@ import { condenseTimeline } from '../summary/timeline.js';
 import { statusLanguage } from '../summary/status-language.js';
 import { rollupDecisionQuality } from '../decision/decision-quality.js';
 import { startConductorUi } from '../ui/server.js';
+import { runDemoScenario } from '../demo/scenario.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { renderHandoffBrief } from '../handoff/handoff-service.js';
@@ -27,7 +28,15 @@ const program = new Command();
 program
   .name('conductor')
   .description('Conductor: The execution control plane for autonomous coding agents')
-  .version('0.1.0');
+  .version('0.1.0')
+  .option('--db <path>', 'Shared control-plane SQLite file for any command (sets CONDUCTOR_DB_PATH)');
+
+// One control plane, many windows: every command can point at the same file
+// the mounted plugin writes, e.g. `conductor --db … metrics`.
+program.hook('preAction', (thisCmd) => {
+  const globals = thisCmd.opts();
+  if (typeof globals.db === 'string') process.env.CONDUCTOR_DB_PATH = globals.db;
+});
 
 program
   .command('status [executionId]')
@@ -324,12 +333,13 @@ program
     try {
       const exec = executionId
         ? manager.executionRepo.findById(executionId)
-        : manager.getActiveExecution();
+        : (manager.getActiveExecution() ?? manager.executionRepo.list({ limit: 1 })[0]);
       if (!exec) throw new Error(executionId ? `execution not found: ${executionId}` : 'no execution to measure');
       const all = decisionRepo.list({ executionId: exec.id });
       const m = computeAttentionMetrics(exec, all, {
         now: Date.now(),
-        takeoverCount: takeoverRepo.listByExecution(exec.id).length,
+        // interventions are recorded by the domain on every take-over path
+        takeoverCount: exec.interventions.filter((i) => i.type === 'take_over').length,
       });
       console.log(`Attention budget — ${exec.goal}`);
       console.log(renderAttentionMetrics(m));
@@ -354,7 +364,7 @@ program
     try {
       const exec = executionId
         ? manager.executionRepo.findById(executionId)
-        : manager.getActiveExecution();
+        : (manager.getActiveExecution() ?? manager.executionRepo.list({ limit: 1 })[0]);
       if (!exec) throw new Error(executionId ? `execution not found: ${executionId}` : 'no execution to show');
       const limit = parseInt(options.limit, 10) || 40;
       const events = manager.eventRepo.listByExecution(exec.id, { limit: 500 });
@@ -391,6 +401,40 @@ program
     process.on('SIGTERM', () => { void server.close().then(() => process.exit(0)); });
     // keep alive
     await new Promise(() => undefined);
+  });
+
+program
+  .command('demo')
+  .description('Deterministic "A Day in the Life" run through the real control plane, ending on the return-to-work screen')
+  .option('-w, --workspace <path>', 'Workspace root for the story', process.cwd())
+  .option('--db <path>', 'Demo control-plane SQLite file (default <workspace>/.conductor-demo/demo.db)')
+  .option('--start <iso>', 'Fictional story start (ISO datetime; default: 42 minutes ago)')
+  .option('-q, --quiet', 'Print only the final screen')
+  .action(async (options) => {
+    let now: number | undefined;
+    if (options.start) {
+      now = Date.parse(options.start);
+      if (Number.isNaN(now)) {
+        console.error('Error: --start must be an ISO datetime');
+        process.exit(1);
+      }
+    }
+    try {
+      const result = await runDemoScenario({
+        workspaceRoot: options.workspace,
+        ...(options.db ? { dbPath: options.db } : {}),
+        ...(now !== undefined ? { now } : {}),
+        ...(options.quiet ? { log: () => {} } : {}),
+      });
+      console.log('');
+      for (const line of result.finalScreen) console.log(line);
+      console.log('');
+      console.log(`Control plane left intact at: ${result.dbPath}`);
+      console.log(`See it live:  conductor ui --db ${result.dbPath}   (one decision is still waiting for you)`);
+    } catch (err) {
+      console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
   });
 
 program

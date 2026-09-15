@@ -163,7 +163,8 @@ export async function startConductorUi(options: ConductorUiOptions): Promise<Con
 
   function cardFor(exec: Execution, pending: ConductorDecision[]): CardView {
     const all = runtime.decisionRepo.list({ executionId: exec.id });
-    const takeovers = runtime.takeoverRepo.listByExecution(exec.id).length;
+    // interventions are the domain-level record of every take-over path
+    const takeovers = exec.interventions.filter((i) => i.type === 'take_over').length;
     const metrics = computeAttentionMetrics(exec, all, { now: nowFn(), takeoverCount: takeovers });
     const lang = statusLanguage(exec.status);
     const events = runtime.eventRepo.listByExecution(exec.id, { limit: 120 });

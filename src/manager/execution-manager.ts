@@ -315,7 +315,13 @@ export class ExecutionManager {
 
     // Queue a durable, human-resolvable decision for every pause-worthy
     // event — even ones that arrive while the execution is already held.
-    this.decisions?.create(this.decisionInputFromEvent(execution, event, classification));
+    const created = this.decisions?.create(
+      this.decisionInputFromEvent(execution, event, classification),
+    );
+    // create() records the decision reference on its own reloaded copy, but
+    // the caller persists THIS in-memory aggregate next; without threading the
+    // id back, the final save would clobber the reference and the count.
+    if (created) execution.addDecision(created.id);
   }
 
   /** Build the developer-facing decision for a paused classification. */

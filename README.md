@@ -72,6 +72,10 @@ conductor ui
 conductor metrics            # attention budget: autonomous vs human minutes
 conductor timeline           # what happened, condensed — no transcript
 
+# see the whole product in one deterministic run (42-min story, derived stats)
+conductor demo
+conductor --db .conductor-demo/demo.db metrics   # any command, any control plane
+
 # audit trail
 conductor history -l 100
 ```

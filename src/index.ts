@@ -14,4 +14,6 @@ export * from './summary/index.js';
 export * from './handoff/index.js';
 export * from './manager/index.js';
 export * from './dsh/index.js';
+export * from './ui/index.js';
+export * from './demo/index.js';
 export * from './cli/index.js';
