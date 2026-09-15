@@ -33,6 +33,8 @@ export interface CreateDecisionInput {
   dedupeKey?: string;
   /** Normalized identity of the action awaiting this decision. */
   subject?: string;
+  /** Structured explanation for the developer (built once at creation). */
+  why?: import('../types/decision.js').DecisionWhy;
   ttlMs?: number;
 }
 
@@ -114,6 +116,7 @@ export class DecisionQueue {
       sourceEventId: input.sourceEventId,
       dedupeKey: input.dedupeKey,
       subject: input.subject,
+      why: input.why,
     };
     this.decisionRepo.save(decision);
 
@@ -138,6 +141,17 @@ export class DecisionQueue {
       });
   }
 
+  /**
+   * Record that a surface showed this decision to the human (observable
+   * 'presented' fact, set once). Cheap no-op on already-presented/resolved.
+   */
+  public present(id: string): void {
+    const d = this.decisionRepo.findById(id);
+    if (!d || d.status !== 'pending' || d.quality?.presentedAt != null) return;
+    d.quality = { ...d.quality, presentedAt: Date.now() };
+    this.decisionRepo.save(d);
+  }
+
   public get(id: string): ConductorDecision {
     const d = this.decisionRepo.findById(id);
     if (!d) throw new DecisionNotFoundError(id);
@@ -157,8 +171,9 @@ export class DecisionQueue {
   }
 
   /**
-   * Resolve a decision. `accept` picks the recommended/first option,
-   * `reject` declines, `custom` supplies developer text (optionally
+   * Resolve a decision. `accepted` approves the action (granting a
+   * one-time retry token when the decision carries a `subject`),
+   * `rejected` declines, `custom` supplies developer text (optionally
    * naming an option). Returns the updated decision.
    */
   public resolve(
@@ -222,19 +237,18 @@ export class DecisionQueue {
         if (d.status !== 'accepted' && d.status !== 'custom') return false;
         const res = d.resolution;
         if (!res) return false;
-        // Explicit approve option always counts; a free-form custom answer
-        // (no option chosen) means "yes, but…" — also an approval.
-        return (
-          res.selectedOptionId === 'approve-once' ||
-          (d.status === 'custom' && res.selectedOptionId == null)
-        );
+        // `accepted` = the human approved the action (the CLI's --accept and
+        // any explicit approve option). Only an explicit deny pick fails to
+        // grant the retry token.
+        return res.selectedOptionId !== 'deny';
       })
       .sort((a, b) => (a.resolution?.resolvedAt ?? 0) - (b.resolution?.resolvedAt ?? 0));
-    if (approved.length === 0) return false;
-    const token = approved[0];
-    token.consumedAt = Date.now();
-    this.decisionRepo.save(token);
-    return true;
+    for (const token of approved) {
+      // Atomic conditional claim: exactly one process wins even when both
+      // read the row as unspent at the same time.
+      if (this.decisionRepo.tryConsume(token.id, Date.now())) return true;
+    }
+    return false;
   }
 
   public cancel(id: string, reason = 'Cancelled'): ConductorDecision {    const decision = this.get(id);

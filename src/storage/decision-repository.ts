@@ -20,6 +20,11 @@ export interface IDecisionRepository {
   findById(id: string): ConductorDecision | null;
   list(filter?: DecisionFilter): ConductorDecision[];
   delete(id: string): boolean;
+  /**
+   * Atomically mark an unspent decision as consumed. Returns true for the
+   * single caller whose UPDATE lands (cross-process exactly-once).
+   */
+  tryConsume(id: string, at: number): boolean;
 }
 
 interface DecisionRow {
@@ -42,6 +47,8 @@ interface DecisionRow {
   dedupe_key: string | null;
   subject: string | null;
   consumed_at: number | null;
+  why_json: string | null;
+  quality_json: string | null;
 }
 
 function rowToDecision(row: DecisionRow): ConductorDecision | null {
@@ -68,6 +75,12 @@ function rowToDecision(row: DecisionRow): ConductorDecision | null {
       dedupeKey: row.dedupe_key ?? undefined,
       subject: row.subject ?? undefined,
       consumedAt: row.consumed_at ?? undefined,
+      why: row.why_json
+        ? (JSON.parse(row.why_json) as ConductorDecision['why'])
+        : undefined,
+      quality: row.quality_json
+        ? (JSON.parse(row.quality_json) as ConductorDecision['quality'])
+        : undefined,
     };
   } catch {
     return null;
@@ -82,8 +95,9 @@ export class SqliteDecisionRepository implements IDecisionRepository {
       INSERT INTO decisions (
         id, execution_id, title, question, context, impact, urgency, confidence,
         status, options_json, recommendation, resolution_json,
-        created_at, updated_at, expires_at, source_event_id, dedupe_key, subject, consumed_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        created_at, updated_at, expires_at, source_event_id, dedupe_key, subject, consumed_at,
+        why_json, quality_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         title = excluded.title,
         question = excluded.question,
@@ -100,7 +114,9 @@ export class SqliteDecisionRepository implements IDecisionRepository {
         source_event_id = excluded.source_event_id,
         dedupe_key = excluded.dedupe_key,
         subject = excluded.subject,
-        consumed_at = excluded.consumed_at
+        consumed_at = excluded.consumed_at,
+        why_json = excluded.why_json,
+        quality_json = excluded.quality_json
     `);
 
     stmt.run(
@@ -123,6 +139,8 @@ export class SqliteDecisionRepository implements IDecisionRepository {
       decision.dedupeKey ?? null,
       decision.subject ?? null,
       decision.consumedAt ?? null,
+      decision.why ? JSON.stringify(decision.why) : null,
+      decision.quality ? JSON.stringify(decision.quality) : null,
     );
   }
 
@@ -166,5 +184,12 @@ export class SqliteDecisionRepository implements IDecisionRepository {
   public delete(id: string): boolean {
     const stmt = this.db.raw.prepare('DELETE FROM decisions WHERE id = ?');
     return stmt.run(id).changes > 0;
+  }
+
+  public tryConsume(id: string, at: number): boolean {
+    const stmt = this.db.raw.prepare(
+      'UPDATE decisions SET consumed_at = ?, updated_at = ? WHERE id = ? AND consumed_at IS NULL',
+    );
+    return stmt.run(at, at, id).changes === 1;
   }
 }

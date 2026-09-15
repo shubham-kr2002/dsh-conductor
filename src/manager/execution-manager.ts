@@ -12,6 +12,8 @@ import type { ConductorEvent } from '../types/event.js';
 import type { ExecutionState, ExecutionStatus } from '../types/execution.js';
 import { PolicyEngine } from '../policy/policy-engine.js';
 import { approvalSubject } from '../policy/approval-subject.js';
+import { buildDecisionWhy } from '../attention/decision-why.js';
+import type { PolicyEvaluationResult } from '../types/policy.js';
 import {
   AttentionEngine,
   createAttentionContext,
@@ -388,7 +390,40 @@ export class ExecutionManager {
       sourceEventId: event.id,
       dedupeKey: dedupeKeyForEvent(event),
       subject: subjectForEvent(event),
+      why: this.buildWhy(execution, event, classification, {
+        impact: isCritical ? 'critical' : 'major',
+        recommendation,
+      }),
     };
+  }
+
+  /** Structured interruption explanation, from real pipeline inputs only. */
+  private buildWhy(
+    execution: Execution,
+    event: ConductorEvent,
+    classification: AttentionClassification,
+    decided: { impact: 'major' | 'critical'; recommendation?: string },
+  ): import('../types/decision.js').DecisionWhy {
+    const derived = this.deriveAttentionInput(execution, event);
+    const payload = event.payload as Record<string, unknown>;
+    let policy: PolicyEvaluationResult | undefined;
+    if (event.type === 'tool.called' && typeof payload.toolName === 'string') {
+      policy = this.policyEngine.evaluateToolExecution(
+        payload.toolName,
+        (payload.arguments as Record<string, unknown>) ?? {},
+      );
+    } else if (event.type === 'command.started' && typeof payload.command === 'string') {
+      policy = this.policyEngine.evaluateShellCommand(payload.command);
+    }
+    return buildDecisionWhy({
+      event,
+      classification,
+      policy,
+      ambiguity: derived.uncertainty,
+      taskAligned: derived.taskAligned,
+      impact: decided.impact,
+      ...(decided.recommendation ? { recommendation: decided.recommendation } : {}),
+    });
   }
 
   private applyEventToExecution(execution: Execution, event: ConductorEvent): void {
@@ -401,7 +436,11 @@ export class ExecutionManager {
       }
 
       case 'execution.completed': {
-        if (execution.isActive()) {
+        // Only states that legally reach COMPLETED. Held states (PAUSED,
+        // BLOCKED, TAKEN_OVER) must NOT be completed by a turn-end: the
+        // event is recorded, the run keeps waiting for the human, who may
+        // resolve and let the next turn finish it. STARTING cannot complete.
+        if (execution.status === 'RUNNING' || execution.status === 'WAITING' || execution.status === 'HANDOFF_PENDING') {
           const summary = (event.payload.summary as string) || 'Execution completed';
           execution.complete(summary);
         }
@@ -409,7 +448,14 @@ export class ExecutionManager {
       }
 
       case 'execution.failed': {
-        if (execution.isActive()) {
+        if (
+          execution.status === 'STARTING' ||
+          execution.status === 'RUNNING' ||
+          execution.status === 'WAITING' ||
+          execution.status === 'TAKEN_OVER' ||
+          execution.status === 'BLOCKED' ||
+          execution.status === 'HANDOFF_PENDING'
+        ) {
           const err = (event.payload.error as string) || 'Execution failed';
           execution.fail(err);
         }

@@ -14,6 +14,18 @@ describe('PolicyEngine', () => {
     assert.ok(categories.has('deployment'));
   });
 
+  test('default rules gate dependency installation but spare routine commands', () => {
+    for (const cmd of ['pnpm add ioredis', 'npm install lodash', 'yarn add left-pad', 'pip install requests']) {
+      const r = engine.evaluateShellCommand(cmd);
+      assert.equal(r.action, 'require_approval', `${cmd} must be gated`);
+      assert.equal(r.ruleId, 'require-approval-dependency-install');
+      assert.equal(r.category, 'dependencies');
+    }
+    for (const cmd of ['pnpm test', 'git status', 'npm run build']) {
+      assert.equal(engine.evaluateShellCommand(cmd).action, 'allow', `${cmd} must stay routine`);
+    }
+  });
+
   test('allows routine development commands', () => {
     for (const cmd of ['npm test', 'git status', 'git diff', 'pnpm run build', 'ls -la']) {
       const res = engine.evaluateShellCommand(cmd);

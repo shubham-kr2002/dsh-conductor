@@ -64,6 +64,8 @@ CREATE TABLE IF NOT EXISTS decisions (
   dedupe_key TEXT,
   subject TEXT,
   consumed_at INTEGER,
+  why_json TEXT,
+  quality_json TEXT,
   FOREIGN KEY(execution_id) REFERENCES executions(id) ON DELETE CASCADE
 );
 

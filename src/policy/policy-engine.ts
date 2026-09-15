@@ -134,6 +134,33 @@ export const DEFAULT_POLICY_RULES: PolicyRule[] = [
     },
     reason: 'Routine non-destructive development command',
   },
+
+  // 7. Dependency Manifest Changes
+  {
+    id: 'require-approval-dependency-install',
+    name: 'Dependency Installation',
+    category: 'dependencies',
+    description: 'Require approval before adding third-party code to the project',
+    action: 'require_approval',
+    match: {
+      commands: [
+        'pnpm add',
+        'pnpm i ',
+        'npm install',
+        'npm i ',
+        'yarn add',
+        'bun add',
+        'pip install',
+        'pip3 install',
+        'poetry add',
+        'cargo add',
+        'go get',
+        'mix deps.get',
+        'bundle install',
+      ],
+    },
+    reason: 'Changes project dependencies and reproducibility',
+  },
 ];
 
 export class PolicyEngine {
@@ -182,9 +209,9 @@ export class PolicyEngine {
       }
     }
 
-    // 2. Check require_approval rules
+    // 2. Check require_approval rules (any category that declares them)
     for (const rule of this._rules.values()) {
-      if ((rule.category === 'shell' || rule.category === 'git' || rule.category === 'deployment') && rule.action === 'require_approval') {
+      if (rule.action === 'require_approval') {
         if (rule.match.commands?.some((cmd) => lower.includes(cmd.toLowerCase()))) {
           return {
             action: 'require_approval',

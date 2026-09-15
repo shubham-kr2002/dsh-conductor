@@ -55,4 +55,64 @@ export interface ConductorDecision {
   subject?: string;
   /** When a mounted gate consumed this approval for one retry (one-time token). */
   consumedAt?: number;
+  /** Structured explanation surfaced to the developer (immutable once created). */
+  why?: DecisionWhy;
+  /** Observable decision-quality facts, filled as reality answers the question. */
+  quality?: DecisionQuality;
+}
+
+/**
+ * The interruption explanation. Each field answers one question a developer
+ * asks when pulled out of flow, and every field has a concrete source in
+ * the pipeline (policy rule, attention input, event payload) — never
+ * invented prose.
+ */
+export interface DecisionWhy {
+  /** WHAT — what the agent is attempting, one line. */
+  what: string;
+  /** WHY NOW — why the agent cannot safely continue alone. */
+  whyNow: string;
+  /** IMPACT — what can change if this is approved. */
+  impact: string;
+  /** REVERSIBILITY — can the action be undone. */
+  reversibility: 'reversible' | 'irreversible' | 'unknown';
+  reversibilityNote?: string;
+  /** EVIDENCE — the deterministic inputs behind the interruption. */
+  evidence: {
+    /** ConductorEvent ids that caused this decision. */
+    eventIds: string[];
+    /** Policy rule id / attention rule id that fired. */
+    ruleIds: string[];
+    /** Concrete things the action touches (paths, command, resources). */
+    affectedResources: string[];
+    /** How far the blast radius reaches. */
+    blastRadius: 'workspace' | 'repository' | 'external-system' | 'infrastructure';
+    /** Ambiguity 0..1 (from the attention classification). */
+    ambiguity: number;
+    /** Whether the event is aligned with the current goal. */
+    taskAligned: boolean;
+  };
+  /** RECOMMENDATION — what Conductor suggests, with rationale. */
+  recommendation?: string;
+  /** CONSEQUENCE — what happens for each answer. */
+  consequences: {
+    approve: string;
+    reject: string;
+  };
+}
+
+/**
+ * Decision quality, derived ONLY from observable facts:
+ * how long the human took, whether the same subject came back, and what
+ * the execution did afterwards. Nothing is fabricated or predicted.
+ */
+export interface DecisionQuality {
+  /** Set when the decision was first fetched for display by a surface. */
+  presentedAt?: number;
+  /** resolvedAt - createdAt (only if resolved). */
+  responseMs?: number;
+  /** How the run fared after resolution (post-hoc, observable). */
+  outcome?: 'resumed-and-progressed' | 'resumed-then-paused-again' | 'failed-after' | 'completed-after' | 'pending';
+  /** Same subject produced a LATER decision (i.e., the first answer didn't stick). */
+  recurred?: boolean;
 }

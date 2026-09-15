@@ -118,7 +118,15 @@ export interface AgentHandoffPayload extends BaseEventPayload {
 }
 
 export interface HumanInterventionPayload extends BaseEventPayload {
-  action: 'take_over' | 'continue' | 'cancel' | 'pause' | 'resume' | 'decision_resolved';
+  action:
+    | 'take_over'
+    | 'continue'
+    | 'cancel'
+    | 'pause'
+    | 'resume'
+    | 'decision_resolved'
+    | 'mark_away'
+    | 'message';
   actor: string;
   notes?: string;
   decisionId?: string;

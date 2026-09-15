@@ -32,6 +32,8 @@ export class ConductorDatabase {
 
     // Pragmas
     this._db.exec('PRAGMA foreign_keys = ON;');
+    // CLI, mounted plugin, and the UI server may write concurrently.
+    this._db.exec('PRAGMA busy_timeout = 5000;');
     if (this.path !== ':memory:' && enableWal) {
       this._db.exec('PRAGMA journal_mode = WAL;');
     }
@@ -51,6 +53,8 @@ export class ConductorDatabase {
       ['decisions', 'dedupe_key', 'TEXT'],
       ['decisions', 'subject', 'TEXT'],
       ['decisions', 'consumed_at', 'INTEGER'],
+      ['decisions', 'why_json', 'TEXT'],
+      ['decisions', 'quality_json', 'TEXT'],
     ];
     for (const [table, column, ddl] of wanted) {
       const cols = (
