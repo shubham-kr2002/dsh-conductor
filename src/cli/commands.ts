@@ -9,8 +9,10 @@ import { SqliteExecutionRepository } from '../storage/execution-repository.js';
 import { SqliteEventRepository } from '../storage/event-repository.js';
 import { SqliteDecisionRepository } from '../storage/decision-repository.js';
 import { SqliteTakeoverRepository } from '../storage/takeover-repository.js';
+import { SqliteHandoffRepository } from '../storage/handoff-repository.js';
 import { DecisionQueue } from '../decision/decision-queue.js';
 import { TakeoverService } from '../takeover/takeover-service.js';
+import { HandoffService } from '../handoff/handoff-service.js';
 import { ExecutionManager } from '../manager/execution-manager.js';
 import type { ConductorEvent } from '../types/event.js';
 import type { ConductorDecision } from '../types/decision.js';
@@ -28,10 +30,12 @@ export interface ConductorRuntime {
   manager: ExecutionManager;
   decisions: DecisionQueue;
   takeover: TakeoverService;
+  handoff: HandoffService;
   execRepo: SqliteExecutionRepository;
   eventRepo: SqliteEventRepository;
   decisionRepo: SqliteDecisionRepository;
   takeoverRepo: SqliteTakeoverRepository;
+  handoffRepo: SqliteHandoffRepository;
   db: ConductorDatabase;
 }
 
@@ -42,6 +46,7 @@ export function createRuntime(dbPath?: string): ConductorRuntime {
   const eventRepo = new SqliteEventRepository(db);
   const decisionRepo = new SqliteDecisionRepository(db);
   const takeoverRepo = new SqliteTakeoverRepository(db);
+  const handoffRepo = new SqliteHandoffRepository(db);
   const decisions = new DecisionQueue(decisionRepo, execRepo);
   const manager = new ExecutionManager(execRepo, eventRepo, undefined, undefined, decisions);
   const takeover = new TakeoverService({
@@ -50,14 +55,22 @@ export function createRuntime(dbPath?: string): ConductorRuntime {
     decisionRepo,
     takeoverRepo,
   });
+  const handoff = new HandoffService({
+    executionRepo: execRepo,
+    eventRepo,
+    decisionRepo,
+    handoffRepo,
+  });
   return {
     manager,
     decisions,
     takeover,
+    handoff,
     execRepo,
     eventRepo,
     decisionRepo,
     takeoverRepo,
+    handoffRepo,
     db,
   };
 }

@@ -123,6 +123,12 @@ export class Execution {
     return this._stateMachine.currentStatus;
   }
 
+  /** Point this execution at the agent now responsible for it (handoff). */
+  public reassignAgent(agentId: string): void {
+    this.agent.id = agentId;
+    this.recordTouch();
+  }
+
   public get transitions(): ReadonlyArray<StateTransitionRecord> {
     return this._stateMachine.transitions;
   }

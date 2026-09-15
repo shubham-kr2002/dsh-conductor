@@ -12,6 +12,7 @@ import {
   renderDecisionDetail,
 } from './commands.js';
 import { renderAwaySummary } from '../summary/away-mode.js';
+import { renderHandoffBrief } from '../handoff/handoff-service.js';
 
 const program = new Command();
 
@@ -250,6 +251,55 @@ program
     const { manager, db } = createManager();
     try {
       console.log(renderAwaySummary(manager.getAwaySummary(executionId)));
+    } catch (err) {
+      console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    } finally {
+      db.close();
+    }
+  });
+
+program
+  .command('handoff <executionId>')
+  .description('Build a structured handoff brief from persisted state (no transcript)')
+  .option('--from <agentId>', 'Outgoing agent id', 'default-agent')
+  .option('--to <agentId>', 'Incoming agent id (optional)')
+  .option('--no-mark', 'Do not mark the execution HANDOFF_PENDING')
+  .action((executionId, options) => {
+    const { handoff, db } = createManager();
+    try {
+      const h = handoff.createHandoff(executionId, {
+        fromAgentId: options.from,
+        toAgentId: options.to,
+        markExecution: options.mark !== false,
+      });
+      console.log(renderHandoffBrief(h));
+      console.log(`\nHandoff id: ${h.handoffId}`);
+      console.log(`Adopt with:  conductor adopt ${h.handoffId} --to <agentId>`);
+    } catch (err) {
+      console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    } finally {
+      db.close();
+    }
+  });
+
+program
+  .command('adopt <handoffId>')
+  .description('Adopt a handoff as an incoming agent and resume the execution')
+  .option('--to <agentId>', 'Incoming agent id', 'default-agent')
+  .option('--no-resume', 'Do not resume the execution automatically')
+  .action((handoffId, options) => {
+    const { handoff, manager, db } = createManager();
+    try {
+      const { brief } = handoff.adoptHandoff(handoffId, options.to, {
+        resumeExecution: options.resume !== false,
+      });
+      console.log(brief);
+      const exec = manager.executionRepo.findById(
+        handoff.loadHandoff(handoffId).executionId,
+      );
+      if (exec) console.log(renderStatus(manager.getStatus(exec.id)));
     } catch (err) {
       console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
       process.exit(1);
