@@ -12,7 +12,7 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "test": "node --test 'tests/**/*.test.ts'",
+    "test": "tsc && node --test 'dist/tests/**/*.test.js'",
     "lint": "tsc --noEmit"
   },
   "keywords": ["dsh", "conductor", "cordis", "agent", "control-plane"],
