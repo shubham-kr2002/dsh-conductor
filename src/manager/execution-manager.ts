@@ -21,6 +21,7 @@ import type {
   AttentionClassification,
   AttentionClassificationInput,
 } from '../types/attention.js';
+import { buildAwaySummary, type AwaySummary } from '../summary/away-mode.js';
 
 export interface ExecutionStatusSummary {
   executionId: string;
@@ -52,6 +53,7 @@ export class ExecutionManager {
   private _activeExecutionId?: string;
   private readonly _subscribers: Array<(event: ConductorEvent) => void> = [];
   private readonly _attentionContexts: Map<string, AttentionContext> = new Map();
+  private readonly _awayMarks: Map<string, number> = new Map();
   public readonly policyEngine: PolicyEngine;
   public readonly attentionEngine: AttentionEngine;
   public decisions?: DecisionQueue;
@@ -545,5 +547,61 @@ export class ExecutionManager {
       return [];
     }
     return this.eventRepo.listByExecution(id, options);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Away mode
+  // ---------------------------------------------------------------------------
+
+  /** Mark "the developer stepped away" — persisted as a human-sourced event. */
+  public markAway(executionId?: string, actor = 'developer'): number {
+    const id = executionId ?? this.getActiveExecution()?.id;
+    if (!id) throw new ExecutionNotFoundError(id ?? '<none>');
+    const now = Date.now();
+    const evt: ConductorEvent = {
+      id: `evt-away-${now.toString(36)}`,
+      executionId: id,
+      type: 'human.intervention',
+      timestamp: now,
+      payload: { action: 'mark_away', actor, notes: 'Developer stepped away' },
+      source: 'human',
+    };
+    this.eventRepo.save(evt);
+    this._awayMarks.set(id, now);
+    return now;
+  }
+
+  /**
+   * Build the "while you were away" summary. The window starts at the last
+   * explicit away-mark (persisted), else at the last human resume/continue,
+   * else at execution start.
+   */
+  public getAwaySummary(executionId?: string, now = Date.now()): AwaySummary {
+    const id = executionId ?? this.getActiveExecution()?.id;
+    if (!id) throw new ExecutionNotFoundError(id ?? '<none>');
+    const execution = this.executionRepo.findById(id);
+    if (!execution) throw new ExecutionNotFoundError(id);
+
+    const events = this.eventRepo.listByExecution(id);
+
+    let since =
+      this._awayMarks.get(id) ??
+      events
+        .filter(
+          (e) =>
+            e.type === 'human.intervention' &&
+            (e.payload as Record<string, unknown>).action === 'mark_away',
+        )
+        .reduce((max, e) => Math.max(max, e.timestamp), 0);
+
+    if (since === 0) {
+      since = execution.transitions
+        .filter((t) => t.actor === 'human' && (t.to === 'RUNNING' || t.to === 'TAKEN_OVER'))
+        .reduce((max, t) => Math.max(max, t.timestamp), 0);
+    }
+    if (since === 0) since = execution.timestamps.createdAt;
+
+    const decisions = this.decisions ? this.decisions.list(id) : [];
+    return buildAwaySummary({ execution, events, decisions, since, now });
   }
 }

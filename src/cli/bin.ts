@@ -11,6 +11,7 @@ import {
   renderDecisions,
   renderDecisionDetail,
 } from './commands.js';
+import { renderAwaySummary } from '../summary/away-mode.js';
 
 const program = new Command();
 
@@ -218,6 +219,37 @@ program
         manager.executionRepo.save(exec);
       }
       console.log(renderStatus(manager.getStatus(executionId)));
+    } catch (err) {
+      console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    } finally {
+      db.close();
+    }
+  });
+
+program
+  .command('away [executionId]')
+  .description('Mark that you stepped away (sets the window for the return summary)')
+  .action((executionId) => {
+    const { manager, db } = createManager();
+    try {
+      const ts = manager.markAway(executionId);
+      console.log(`Away mark recorded at ${new Date(ts).toISOString()}.`);
+    } catch (err) {
+      console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    } finally {
+      db.close();
+    }
+  });
+
+program
+  .command('summary [executionId]')
+  .description('Decision-oriented "while you were away" summary')
+  .action((executionId) => {
+    const { manager, db } = createManager();
+    try {
+      console.log(renderAwaySummary(manager.getAwaySummary(executionId)));
     } catch (err) {
       console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
       process.exit(1);
