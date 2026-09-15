@@ -16,6 +16,7 @@ import {
   createAttentionContext,
   type AttentionContext,
 } from '../attention/attention-engine.js';
+import type { DecisionQueue, CreateDecisionInput } from '../decision/decision-queue.js';
 import type {
   AttentionClassification,
   AttentionClassificationInput,
@@ -53,6 +54,7 @@ export class ExecutionManager {
   private readonly _attentionContexts: Map<string, AttentionContext> = new Map();
   public readonly policyEngine: PolicyEngine;
   public readonly attentionEngine: AttentionEngine;
+  public decisions?: DecisionQueue;
   /** When true, PAUSE classifications transition the execution to PAUSED. */
   public enforceAttention = true;
 
@@ -61,9 +63,11 @@ export class ExecutionManager {
     public readonly eventRepo: IEventRepository,
     policyEngine?: PolicyEngine,
     attentionEngine?: AttentionEngine,
+    decisions?: DecisionQueue,
   ) {
     this.policyEngine = policyEngine ?? new PolicyEngine();
     this.attentionEngine = attentionEngine ?? new AttentionEngine();
+    this.decisions = decisions;
   }
 
   private attentionContext(executionId: string): AttentionContext {
@@ -177,7 +181,7 @@ export class ExecutionManager {
     // 3. Apply event and attention action to execution state
     if (execution && classification) {
       this.applyEventToExecution(execution, enriched);
-      this.applyAttentionAction(execution, classification);
+      this.applyAttentionAction(execution, classification, enriched);
       this.executionRepo.save(execution);
     }
 
@@ -291,17 +295,96 @@ export class ExecutionManager {
   private applyAttentionAction(
     execution: Execution,
     classification: AttentionClassification,
+    event: ConductorEvent,
   ): void {
     if (!this.enforceAttention) return;
     if (classification.action !== 'PAUSE') return;
     if (execution.isTerminal()) return;
-    if (execution.status === 'PAUSED' || execution.status === 'BLOCKED') return;
 
-    if (execution.status === 'RUNNING' || execution.status === 'STARTING') {
-      execution.pause(classification.rationale, 'attention');
-    } else if (execution.status === 'WAITING') {
-      execution.pause(`Attention required: ${classification.rationale}`, 'attention');
+    const alreadyHeld =
+      execution.status === 'PAUSED' || execution.status === 'BLOCKED';
+
+    if (!alreadyHeld) {
+      if (execution.status === 'RUNNING' || execution.status === 'STARTING') {
+        execution.pause(classification.rationale, 'attention');
+      } else if (execution.status === 'WAITING') {
+        execution.pause(`Attention required: ${classification.rationale}`, 'attention');
+      }
     }
+
+    // Queue a durable, human-resolvable decision for every pause-worthy
+    // event — even ones that arrive while the execution is already held.
+    this.decisions?.create(this.decisionInputFromEvent(execution, event, classification));
+  }
+
+  /** Build the developer-facing decision for a paused classification. */
+  private decisionInputFromEvent(
+    execution: Execution,
+    event: ConductorEvent,
+    classification: AttentionClassification,
+  ): CreateDecisionInput {
+    const payload = event.payload as Record<string, unknown>;
+    const isCritical = classification.level === 'CRITICAL';
+
+    let title = 'Execution paused — your judgment required';
+    let question = classification.rationale;
+    let context = `${event.type} at phase "${execution.currentPhase}"`;
+    const options: Array<{ id: string; label: string; description?: string; isRecommended?: boolean }> = [];
+    let recommendation = 'Reject and keep the workspace as-is';
+
+    if (event.type === 'agent.question') {
+      question = String(payload.question ?? question);
+      context = String(payload.context ?? context);
+      const rawOptions = Array.isArray(payload.options)
+        ? (payload.options as Array<{ label: string; description?: string }>)
+        : [];
+      rawOptions.forEach((opt, idx) => {
+        const recommended =
+          payload.recommendedOption != null &&
+          String(payload.recommendedOption) === opt.label;
+        options.push({
+          id: `opt-${String(idx)}`,
+          label: opt.label,
+          description: opt.description,
+          isRecommended: recommended,
+        });
+      });
+      if (payload.recommendedOption) {
+        recommendation = String(payload.recommendedOption);
+      }
+    } else {
+      const toolName = String(payload.toolName ?? '');
+      const command = String(payload.command ?? '');
+      const subject = command !== '' ? `command \`${command}\`` : `tool \`${toolName}\``;
+      title = `${isCritical ? 'Dangerous' : 'Consequential'} ${subject}`;
+      question = `The agent wants to run ${subject}. ${classification.rationale}`;
+      context = [
+        `Execution: ${execution.id}`,
+        `Goal: ${execution.goal}`,
+        `Event: ${event.id} (${event.type})`,
+        payload.filePath ? `Path: ${String(payload.filePath)}` : '',
+      ]
+        .filter((line) => line !== '')
+        .join('\n');
+      options.push(
+        { id: 'approve-once', label: 'Approve once', description: 'Allow this action only', isRecommended: false },
+        { id: 'deny', label: 'Reject', description: 'Do not run it; let the agent find another way', isRecommended: true },
+      );
+      recommendation = 'Reject and keep the workspace as-is';
+    }
+
+    return {
+      executionId: execution.id,
+      title,
+      question,
+      context,
+      options,
+      recommendation,
+      impact: isCritical ? 'critical' : 'major',
+      urgency: isCritical ? 'critical' : 'high',
+      confidence: classification.confidence,
+      sourceEventId: event.id,
+    };
   }
 
   private applyEventToExecution(execution: Execution, event: ConductorEvent): void {

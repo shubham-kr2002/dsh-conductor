@@ -8,5 +8,6 @@ export * from './storage/index.js';
 export * from './adapter/index.js';
 export * from './policy/index.js';
 export * from './attention/index.js';
+export * from './decision/index.js';
 export * from './manager/index.js';
 export * from './cli/index.js';

@@ -7,8 +7,11 @@ import { dirname, join, resolve } from 'node:path';
 import { ConductorDatabase } from '../storage/database.js';
 import { SqliteExecutionRepository } from '../storage/execution-repository.js';
 import { SqliteEventRepository } from '../storage/event-repository.js';
+import { SqliteDecisionRepository } from '../storage/decision-repository.js';
+import { DecisionQueue } from '../decision/decision-queue.js';
 import { ExecutionManager } from '../manager/execution-manager.js';
 import type { ConductorEvent } from '../types/event.js';
+import type { ConductorDecision } from '../types/decision.js';
 
 export function resolveDbPath(): string {
   if (process.env.CONDUCTOR_DB_PATH) {
@@ -19,16 +22,22 @@ export function resolveDbPath(): string {
   return localDb;
 }
 
-export function createManager(dbPath?: string): {
+export interface ConductorRuntime {
   manager: ExecutionManager;
+  decisions: DecisionQueue;
+  decisionRepo: SqliteDecisionRepository;
   db: ConductorDatabase;
-} {
+}
+
+export function createManager(dbPath?: string): ConductorRuntime {
   const path = dbPath ?? resolveDbPath();
   const db = new ConductorDatabase({ path });
   const execRepo = new SqliteExecutionRepository(db);
   const eventRepo = new SqliteEventRepository(db);
-  const manager = new ExecutionManager(execRepo, eventRepo);
-  return { manager, db };
+  const decisionRepo = new SqliteDecisionRepository(db);
+  const decisions = new DecisionQueue(decisionRepo, execRepo);
+  const manager = new ExecutionManager(execRepo, eventRepo, undefined, undefined, decisions);
+  return { manager, decisions, decisionRepo, db };
 }
 
 export function renderStatus(summary: ReturnType<ExecutionManager['getStatus']>): string {
@@ -120,5 +129,63 @@ export function renderHistory(events: ConductorEvent[]): string {
   }
 
   lines.push('=================================================================');
+  return lines.join('\n');
+}
+
+/** Render the pending decision queue, highest priority first. */
+export function renderDecisions(decisions: ConductorDecision[]): string {
+  const lines: string[] = [
+    '=================================================================',
+    '                      CONDUCTOR DECISIONS                      ',
+    '=================================================================',
+  ];
+
+  if (decisions.length === 0) {
+    lines.push('Nothing needs you. The agent is working autonomously.');
+    lines.push('=================================================================');
+    return lines.join('\n');
+  }
+
+  lines.push(`${String(decisions.length)} decision(s) require your judgment:`);
+  lines.push('');
+  decisions.forEach((d, idx) => {
+    const age = Math.round((Date.now() - d.createdAt) / 60000);
+    lines.push(`${String(idx + 1)}. [${d.impact}/${d.urgency}] ${d.title}`);
+    lines.push(`   ${d.question}`);
+    if (d.recommendation) lines.push(`   Agent recommends: ${d.recommendation}`);
+    if (d.options.length > 0) {
+      for (const opt of d.options) {
+        const rec = opt.isRecommended ? ' <= recommended' : '';
+        lines.push(`     (${opt.id}) ${opt.label}${opt.description ? ` — ${opt.description}` : ''}${rec}`);
+      }
+    }
+    lines.push(`   id: ${d.id} | execution: ${d.executionId} | ${String(age)}m ago`);
+    lines.push('');
+  });
+  lines.push('Resolve with:  conductor resolve <decision-id> --accept | --reject | --custom "<answer>"');
+  lines.push('=================================================================');
+  return lines.join('\n');
+}
+
+export function renderDecisionDetail(d: ConductorDecision): string {
+  const lines = [
+    `Decision ${d.id}`,
+    `  Title:   ${d.title}`,
+    `  Status:  ${d.status}`,
+    `  Impact:  ${d.impact} | Urgency: ${d.urgency} | Confidence: ${String(d.confidence)}`,
+    `  Question: ${d.question}`,
+    '  Context:',
+    ...d.context.split('\n').map((l) => `    ${l}`),
+  ];
+  if (d.options.length > 0) {
+    lines.push('  Options:');
+    for (const opt of d.options) {
+      lines.push(`    (${opt.id}) ${opt.label}${opt.isRecommended ? ' <= recommended' : ''}`);
+    }
+  }
+  if (d.resolution) {
+    lines.push(`  Resolved by ${d.resolution.resolvedBy} as ${d.resolution.status}`);
+    if (d.resolution.customValue) lines.push(`  Answer: ${d.resolution.customValue}`);
+  }
   return lines.join('\n');
 }
