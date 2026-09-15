@@ -13,4 +13,5 @@ export * from './takeover/index.js';
 export * from './summary/index.js';
 export * from './handoff/index.js';
 export * from './manager/index.js';
+export * from './dsh/index.js';
 export * from './cli/index.js';

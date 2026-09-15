@@ -204,3 +204,52 @@ Conductor is architected as a modular, decoupled execution control plane:
 - **Phase 6:** Away Mode (Executive Summaries & Event Aggregation)
 - **Phase 7:** Structured Agent Handoff (State Export & Context Hydration)
 - **Phase 8:** Production Polish, End-to-End Integration, & Documentation
+
+---
+
+## 8. As-Built Integration Layer (Phase 8)
+
+The `src/dsh/` module is the only place Conductor touches DSH, and it never
+imports DSH code — it speaks **structural mirrors** of the verified
+extension-point contracts:
+
+| Extension point (waterfall) | Conductor behavior |
+| :--- | :--- |
+| `tools/pre-execute` | Observes + classifies the call (`EventAdapter`), then gates: `undefined`→delegate, `{kind:'deny', reason}`→claim. Held executions (`PAUSED/BLOCKED/TAKEN_OVER/HANDOFF_PENDING`) deny everything. |
+| `agent/pre-step` | While held: `{kind:'reject'}` — and because DSH *consumes claimed inbox messages* on reject, the mount layer first `agent.inject()`s them back so queued work survives the freeze. |
+| `user-questions/request` | Mirrors every agent question into the Decision Queue (priority-scored), then delegates to the human UI. `autoAnswerRoutine` mode claims routine low-stakes recommended-option questions with a valid `AskUserQuestionAnswer`. |
+| `approval/request` | While a human holds the wheel, DSH approvals are answered `rejected` instead of hanging on an unwatched prompt; otherwise delegated untouched. |
+| `session/event` | Post-commit durable log (`tool/result`, `user/message`, `turn/end`) is projected to leaf scalars and fed into the same event pipeline. |
+
+Key decisions:
+
+- **One decision per action.** `tool.called` + `command.started` share the
+  originating `callId`; decisions carry a `dedupeKey` so one bash command
+  yields exactly one human interruption (loudest signal wins).
+- **Approvals are cross-process tokens.** Resolving a decision
+  `--custom -o approve-once` (CLI process) persists `status + subject`; the
+  mounted gate reads the shared SQLite and lets exactly one retry of that
+  normalized subject pass (`consumeApproval`), then re-gates.
+- **Layering stays intact:** `host-surface.ts` (normalized contracts),
+  `conductor-bridge.ts` (pure policy/attention/queue logic, fake-host
+  tested), `cordis-plugin.ts` (real cordis waterfall `next()` semantics,
+  live-object leaf projection), `mount.ts` (composition root for a
+  `cordis.yml` row).
+
+Mounting (static composition row):
+
+```yaml
+- name: 'dsh-conductor'          # or abs path to dist/src/dsh/cordis-plugin.js
+  config:
+    goal: 'finish the payments migration'
+    workspaceRoot: /srv/payments
+    dbPath: /srv/payments/.conductor/conductor.db
+```
+
+The CLI (`conductor decisions/resolve/status/away/take-over/continue/handoff/adopt`)
+shares the same SQLite file from any process — that is the human's control
+surface while the agent keeps working.
+
+## 9. Roadmap Status
+
+Phases 0–8 **complete**. Phase 8 delivered the DSH plugin integration: normalized host contracts, the pure Conductor bridge, the cordis mounting layer, and live cross-process approval flow (93/93 tests).

@@ -60,6 +60,8 @@ export interface ToolCalledPayload extends BaseEventPayload {
 export interface FileChangedPayload extends BaseEventPayload {
   filePath: string;
   action: 'created' | 'modified' | 'deleted';
+  /** Underlying tool-call id (collapses related events into one decision). */
+  callId?: string;
   diff?: string;
   linesAdded?: number;
   linesRemoved?: number;

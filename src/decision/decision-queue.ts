@@ -29,6 +29,10 @@ export interface CreateDecisionInput {
   confidence: number;
   /** Link back to the ConductorEvent that triggered this decision. */
   sourceEventId?: string;
+  /** Coalescing key: one pending decision per key (e.g. per tool-call id). */
+  dedupeKey?: string;
+  /** Normalized identity of the action awaiting this decision. */
+  subject?: string;
   ttlMs?: number;
 }
 
@@ -67,6 +71,31 @@ export class DecisionQueue {
 
   public create(input: CreateDecisionInput): ConductorDecision {
     const now = Date.now();
+
+    if (input.dedupeKey) {
+      const existing = this.decisionRepo
+        .list({ status: 'pending', executionId: input.executionId })
+        .find((d) => d.dedupeKey === input.dedupeKey);
+      if (existing) {
+        // Keep the loudest signal for the same underlying action.
+        const candidate = decisionPriority(existing);
+        const incoming = decisionPriority({
+          ...existing,
+          impact: input.impact,
+          urgency: input.urgency,
+          confidence: input.confidence,
+        });
+        if (incoming > candidate) {
+          existing.impact = input.impact;
+          existing.urgency = input.urgency;
+          existing.confidence = input.confidence;
+          existing.updatedAt = now;
+          this.decisionRepo.save(existing);
+        }
+        return existing;
+      }
+    }
+
     const decision: ConductorDecision = {
       id: `dec-${randomUUID()}`,
       executionId: input.executionId,
@@ -82,6 +111,9 @@ export class DecisionQueue {
       createdAt: now,
       updatedAt: now,
       expiresAt: input.ttlMs ? now + input.ttlMs : undefined,
+      sourceEventId: input.sourceEventId,
+      dedupeKey: input.dedupeKey,
+      subject: input.subject,
     };
     this.decisionRepo.save(decision);
 
@@ -176,8 +208,36 @@ export class DecisionQueue {
     return decision;
   }
 
-  public cancel(id: string, reason = 'Cancelled'): ConductorDecision {
-    const decision = this.get(id);
+  /**
+   * Cross-process approval token: consume one RESOLVED-APPROVED decision
+   * whose subject matches the agent's retried action. Written by whichever
+   * process resolved it (e.g. the CLI), read by the mounted plugin gate.
+   * Approve-once semantics: returns true at most once per decision.
+   */
+  public consumeApproval(executionId: string, subject: string): boolean {
+    const approved = this.decisionRepo
+      .list({ executionId })
+      .filter((d) => {
+        if (d.subject !== subject || d.consumedAt != null) return false;
+        if (d.status !== 'accepted' && d.status !== 'custom') return false;
+        const res = d.resolution;
+        if (!res) return false;
+        // Explicit approve option always counts; a free-form custom answer
+        // (no option chosen) means "yes, but…" — also an approval.
+        return (
+          res.selectedOptionId === 'approve-once' ||
+          (d.status === 'custom' && res.selectedOptionId == null)
+        );
+      })
+      .sort((a, b) => (a.resolution?.resolvedAt ?? 0) - (b.resolution?.resolvedAt ?? 0));
+    if (approved.length === 0) return false;
+    const token = approved[0];
+    token.consumedAt = Date.now();
+    this.decisionRepo.save(token);
+    return true;
+  }
+
+  public cancel(id: string, reason = 'Cancelled'): ConductorDecision {    const decision = this.get(id);
     if (decision.status !== 'pending') return decision;
     decision.status = 'cancelled';
     decision.updatedAt = Date.now();

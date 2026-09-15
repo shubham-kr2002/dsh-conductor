@@ -60,6 +60,10 @@ CREATE TABLE IF NOT EXISTS decisions (
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   expires_at INTEGER,
+  source_event_id TEXT,
+  dedupe_key TEXT,
+  subject TEXT,
+  consumed_at INTEGER,
   FOREIGN KEY(execution_id) REFERENCES executions(id) ON DELETE CASCADE
 );
 

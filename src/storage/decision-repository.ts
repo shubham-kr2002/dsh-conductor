@@ -38,6 +38,10 @@ interface DecisionRow {
   created_at: number;
   updated_at: number;
   expires_at: number | null;
+  source_event_id: string | null;
+  dedupe_key: string | null;
+  subject: string | null;
+  consumed_at: number | null;
 }
 
 function rowToDecision(row: DecisionRow): ConductorDecision | null {
@@ -60,6 +64,10 @@ function rowToDecision(row: DecisionRow): ConductorDecision | null {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       expiresAt: row.expires_at ?? undefined,
+      sourceEventId: row.source_event_id ?? undefined,
+      dedupeKey: row.dedupe_key ?? undefined,
+      subject: row.subject ?? undefined,
+      consumedAt: row.consumed_at ?? undefined,
     };
   } catch {
     return null;
@@ -74,8 +82,8 @@ export class SqliteDecisionRepository implements IDecisionRepository {
       INSERT INTO decisions (
         id, execution_id, title, question, context, impact, urgency, confidence,
         status, options_json, recommendation, resolution_json,
-        created_at, updated_at, expires_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        created_at, updated_at, expires_at, source_event_id, dedupe_key, subject, consumed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         title = excluded.title,
         question = excluded.question,
@@ -88,7 +96,11 @@ export class SqliteDecisionRepository implements IDecisionRepository {
         recommendation = excluded.recommendation,
         resolution_json = excluded.resolution_json,
         updated_at = excluded.updated_at,
-        expires_at = excluded.expires_at
+        expires_at = excluded.expires_at,
+        source_event_id = excluded.source_event_id,
+        dedupe_key = excluded.dedupe_key,
+        subject = excluded.subject,
+        consumed_at = excluded.consumed_at
     `);
 
     stmt.run(
@@ -107,6 +119,10 @@ export class SqliteDecisionRepository implements IDecisionRepository {
       decision.createdAt,
       decision.updatedAt,
       decision.expiresAt ?? null,
+      decision.sourceEventId ?? null,
+      decision.dedupeKey ?? null,
+      decision.subject ?? null,
+      decision.consumedAt ?? null,
     );
   }
 

@@ -47,4 +47,12 @@ export interface ConductorDecision {
   createdAt: number;
   updatedAt: number;
   expiresAt?: number;
+  /** ConductorEvent that produced this decision. */
+  sourceEventId?: string;
+  /** Coalescing key: pending decisions with the same key are not duplicated. */
+  dedupeKey?: string;
+  /** Normalized identity of the approved action (retry-matching across processes). */
+  subject?: string;
+  /** When a mounted gate consumed this approval for one retry (one-time token). */
+  consumedAt?: number;
 }

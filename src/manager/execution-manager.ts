@@ -11,6 +11,7 @@ import type { IEventRepository } from '../storage/event-repository.js';
 import type { ConductorEvent } from '../types/event.js';
 import type { ExecutionState, ExecutionStatus } from '../types/execution.js';
 import { PolicyEngine } from '../policy/policy-engine.js';
+import { approvalSubject } from '../policy/approval-subject.js';
 import {
   AttentionEngine,
   createAttentionContext,
@@ -54,8 +55,6 @@ export class ExecutionManager {
   private readonly _subscribers: Array<(event: ConductorEvent) => void> = [];
   private readonly _attentionContexts: Map<string, AttentionContext> = new Map();
   private readonly _awayMarks: Map<string, number> = new Map();
-  public readonly policyEngine: PolicyEngine;
-  public readonly attentionEngine: AttentionEngine;
   public decisions?: DecisionQueue;
   /** When true, PAUSE classifications transition the execution to PAUSED. */
   public enforceAttention = true;
@@ -63,12 +62,10 @@ export class ExecutionManager {
   constructor(
     public readonly executionRepo: IExecutionRepository,
     public readonly eventRepo: IEventRepository,
-    policyEngine?: PolicyEngine,
-    attentionEngine?: AttentionEngine,
+    public readonly policyEngine: PolicyEngine = new PolicyEngine(),
+    public readonly attentionEngine: AttentionEngine = new AttentionEngine(),
     decisions?: DecisionQueue,
   ) {
-    this.policyEngine = policyEngine ?? new PolicyEngine();
-    this.attentionEngine = attentionEngine ?? new AttentionEngine();
     this.decisions = decisions;
   }
 
@@ -356,15 +353,18 @@ export class ExecutionManager {
       }
     } else {
       const toolName = String(payload.toolName ?? '');
-      const command = String(payload.command ?? '');
+      const toolArgs = (payload.arguments as Record<string, unknown> | undefined) ?? {};
+      const command = String(payload.command ?? toolArgs.command ?? '');
       const subject = command !== '' ? `command \`${command}\`` : `tool \`${toolName}\``;
       title = `${isCritical ? 'Dangerous' : 'Consequential'} ${subject}`;
       question = `The agent wants to run ${subject}. ${classification.rationale}`;
+      const filePath =
+        payload.filePath ?? toolArgs.file_path ?? toolArgs.path ?? '';
       context = [
         `Execution: ${execution.id}`,
         `Goal: ${execution.goal}`,
         `Event: ${event.id} (${event.type})`,
-        payload.filePath ? `Path: ${String(payload.filePath)}` : '',
+        String(filePath) !== '' ? `Path: ${String(filePath)}` : '',
       ]
         .filter((line) => line !== '')
         .join('\n');
@@ -386,6 +386,8 @@ export class ExecutionManager {
       urgency: isCritical ? 'critical' : 'high',
       confidence: classification.confidence,
       sourceEventId: event.id,
+      dedupeKey: dedupeKeyForEvent(event),
+      subject: subjectForEvent(event),
     };
   }
 
@@ -604,4 +606,35 @@ export class ExecutionManager {
     const decisions = this.decisions ? this.decisions.list(id) : [];
     return buildAwaySummary({ execution, events, decisions, since, now });
   }
+}
+
+/**
+ * Collapse all events produced by ONE underlying tool call (tool.called +
+ * command.started / file.changed / agent.question) into a single human-facing
+ * decision via the shared call id.
+ */
+/**
+ * Normalized identity of the action a decision is about — the mounted gate
+ * matches an accepted decision's subject against the agent's retried call.
+ */
+function subjectForEvent(event: ConductorEvent): string | undefined {
+  const payload = event.payload as Record<string, unknown>;
+  if (event.type === 'tool.called' && typeof payload.toolName === 'string') {
+    return approvalSubject(payload.toolName, (payload.arguments as Record<string, unknown>) ?? {});
+  }
+  if (event.type === 'command.started' && typeof payload.command === 'string') {
+    return approvalSubject('bash', { command: payload.command });
+  }
+  return undefined;
+}
+
+function dedupeKeyForEvent(event: ConductorEvent): string | undefined {
+  const payload = event.payload as Record<string, unknown>;
+  for (const key of ['callId', 'commandId', 'questionId'] as const) {
+    const value = payload[key];
+    if (typeof value === 'string' && value.length > 0) {
+      return `${event.executionId}:${value}`;
+    }
+  }
+  return undefined;
 }

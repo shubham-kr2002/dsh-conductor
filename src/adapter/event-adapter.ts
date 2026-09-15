@@ -127,6 +127,7 @@ export class EventAdapter {
       const filePath = (args.file_path as string) ?? (args.path as string) ?? 'unknown';
       const action = toolExec.name === 'write' ? 'created' : 'modified';
       const filePayload: FileChangedPayload = {
+        callId: toolExec.callId,
         filePath,
         action,
       };
@@ -136,9 +137,14 @@ export class EventAdapter {
       const first = questions[0];
       const qPayload: AgentQuestionPayload = {
         questionId: toolExec.callId,
-        question: first ? first.question : 'Agent asked a question',
-        options: first?.options,
+        question: first?.question ?? (args.question as string) ?? 'Agent asked a question',
+        options: first?.options ?? (args.options as AgentQuestionPayload['options']),
       };
+      if (typeof args.context === 'string') qPayload.context = args.context;
+      if (typeof args.recommendedOption === 'string') qPayload.recommendedOption = args.recommendedOption;
+      for (const key of ['consequence', 'recommendation'] as const) {
+        if (typeof args[key] === 'string') (qPayload as Record<string, unknown>)[key] = args[key];
+      }
       events.push(this.createEvent(executionId, 'agent.question', qPayload, 'agent'));
     }
 

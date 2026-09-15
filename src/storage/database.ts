@@ -38,6 +38,30 @@ export class ConductorDatabase {
 
     // Apply schema
     this._db.exec(SCHEMA_V1);
+    this.migrate();
+  }
+
+  /**
+   * Idempotent column additions for databases created by earlier schema
+   * versions (CREATE TABLE IF NOT EXISTS never touches existing tables).
+   */
+  private migrate(): void {
+    const wanted: Array<[table: string, column: string, ddl: string]> = [
+      ['decisions', 'source_event_id', 'TEXT'],
+      ['decisions', 'dedupe_key', 'TEXT'],
+      ['decisions', 'subject', 'TEXT'],
+      ['decisions', 'consumed_at', 'INTEGER'],
+    ];
+    for (const [table, column, ddl] of wanted) {
+      const cols = (
+        this.raw.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+          name: string;
+        }>
+      ).map((c) => c.name);
+      if (!cols.includes(column)) {
+        this.raw.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+      }
+    }
   }
 
   public get raw(): DatabaseSync {
