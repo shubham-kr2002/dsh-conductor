@@ -319,7 +319,19 @@ document.body.addEventListener('click', () => {
   document.body.style.pointerEvents = '';
   refresh().then(() => {
     const a = STATE.attention;
-    toast(a.needsYou > 0 ? `Welcome back — ${a.needsYou} execution(s) need your judgment.` : 'Welcome back — nothing needed you.');
+    // Return experience: put the complete picture in front, in one second.
+    if (a.needsYou > 0) {
+      const held = STATE.executions.find((c) => c.needsYou && c.pendingDecisions > 0)
+        || STATE.executions.find((c) => c.needsYou);
+      toast(`Welcome back — ${a.needsYou} execution(s) need your judgment.`);
+      if (held) openDetail(held.executionId);
+    } else if (a.working > 0) {
+      toast('Welcome back — nothing needed you; agents kept working.');
+    } else {
+      toast('Welcome back — all runs finished while you were away.');
+      const last = STATE.executions[0];
+      if (last) openDetail(last.executionId);
+    }
   });
 }, true);
 
