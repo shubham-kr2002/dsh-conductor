@@ -67,6 +67,11 @@ conductor continue exec-… --notes "use the .sql I committed, not the ORM"
 conductor handoff exec-… --from agent-alpha
 conductor adopt hov-… --to agent-beta
 
+# the human control surface (same DB, browser)
+conductor ui
+conductor metrics            # attention budget: autonomous vs human minutes
+conductor timeline           # what happened, condensed — no transcript
+
 # audit trail
 conductor history -l 100
 ```
@@ -115,13 +120,42 @@ the CLI — the agent keeps working, the CLI is your control surface:
 ## Development
 
 ```bash
-pnpm test        # builds to dist/ then runs node:test (93 tests)
+pnpm test        # builds to dist/, copies UI assets, runs node:test
 pnpm run typecheck
 pnpm run lint
-pnpm run build
+pnpm run build   # compiles + copies the control-surface static assets
 ```
 
-Status: Phases 0–8 complete. `pnpm test` → 93/93.
+## Mission control (`conductor ui`)
+
+The CLI and the browser are two windows onto **one control plane** (the same
+SQLite file the mounted plugin writes). Nothing is stored in the browser.
+
+```bash
+conductor init                 # scaffold .conductor/ + a ready-to-mount plugin row
+conductor ui --db ./.conductor/conductor.db   # http://127.0.0.1:8717
+```
+
+The screen answers one question at three levels:
+
+- **L1 — attention budget:** `3 agents working · 1 needs your judgment`, plus
+  `● 4m attention / ○ 38m autonomous · attention ratio 9%`. Derived entirely
+  from the transition log, never from extra bookkeeping.
+- **L2 — execution cards:** goal, human-readable status
+  (`Waiting for your judgment`, not `PAUSED`), the last *semantic* activity,
+  files touched, pending count. A card never becomes a transcript.
+- **L3 — decision queue:** each interruption is a human-judgment request that
+  explains itself — WHAT / WHY NOW / IMPACT / REVERSIBILITY / EVIDENCE (policy
+  rule ids, blast radius, ambiguity) / RECOMMENDATION / CONSEQUENCE — with
+  `Review · Reject · Approve once` actions.
+
+Take over or return control, mark-away and get a clean return summary; the
+page updates live via a one-row SQLite fingerprint pushed over Server-Sent
+Events (no Redis, no WebSocket layer). CLI mirrors every view:
+`conductor metrics`, `conductor timeline`, `conductor resolve`.
+
+
+Status: Phases 0–9 complete (see ARCHITECTURE.md §10). `pnpm test` → all green.
 
 ## License
 

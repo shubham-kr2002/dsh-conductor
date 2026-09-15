@@ -3,7 +3,7 @@
 **Product:** Conductor — The Human-Control Layer for Autonomous Coding Agents  
 **Target Runtime:** DeepSeek Harness (DSH) on Node.js v24+  
 **Workspace:** `/run/media/shubh/New Volume/company/dsh/dsh-conductor`  
-**Date:** September 2024  
+**Date:** living document — updated through Phase 9  
 **Author:** Antigravity / DeepSeek Engineering  
 
 ---
@@ -189,7 +189,7 @@ Conductor is architected as a modular, decoupled execution control plane:
 | **Agent Pausing Race Conditions** | Unintended step execution while entering `PAUSED` or `TAKEN_OVER`. | Use `agent/pre-step` waterfall and `agent.whenIdle()` to cleanly halt at step boundaries. |
 | **Manual Workspace Changes Conflicting with Agent State** | Agent hallucinates old file contents after human edit during Takeover. | Inspect workspace git status upon `CONTINUE`; inject structured continuation context informing agent that human changes are authoritative. |
 | **Alert Fatigue from Agent Questions** | Developer bombarded with low-value confirmations. | Attention Engine filters repetitive or low-consequence questions; only critical ambiguities reach the Decision Queue. |
-| **Storage Fragmentation** | Execution state lost across session restarts. | ACID SQLite storage persists every state transition and decision synchronously before acknowledging actions. |
+| **Storage Fragmentation** | Execution state lost across session restarts. | synchronous, durable (SQLite WAL + busy_timeout) SQLite storage persists every state transition and decision synchronously before acknowledging actions. |
 
 ---
 
@@ -253,3 +253,76 @@ surface while the agent keeps working.
 ## 9. Roadmap Status
 
 Phases 0–8 **complete**. Phase 8 delivered the DSH plugin integration: normalized host contracts, the pure Conductor bridge, the cordis mounting layer, and live cross-process approval flow (93/93 tests).
+
+## 10. Control Surface & Attention Intelligence (Phase 9, as built)
+
+Phase 9 turned the control plane into a *mission control* experience without
+adding a second source of truth.
+
+### 10.1 The decision explanation model
+
+Every interruption carries a `DecisionWhy` (`src/attention/decision-why.ts`),
+built **only** from pipeline inputs that already exist at the moment of the
+interruption — no LLM, no prose invention:
+
+| field | source |
+|---|---|
+| WHAT | tool/command/question payload |
+| WHY NOW | AttentionEngine `rationale` + `PolicyEvaluationResult.reason` |
+| IMPACT | impact decision (critical ⟸ policy deny / CRITICAL level) |
+| REVERSIBILITY | adapter inference + policy pattern (rm/git push/publish/infra) |
+| EVIDENCE | eventIds, attention + policy `ruleIds`, affected resources, deterministic blast radius (workspace → repository → external-system → infrastructure), ambiguity (= attention uncertainty), task alignment |
+| RECOMMENDATION | decision recommendation (question payloads / policy guidance) |
+| CONSEQUENCE | fixed per-kind approve/reject contract text |
+
+Created immutable at the queue (`DecisionQueue.create` → `why`), persisted in
+`decisions.why_json`.
+
+### 10.2 Attention metrics — the one number
+
+`computeAttentionMetrics` (`src/summary/attention-metrics.ts`) reconstructs
+state occupancy from the transition log alone: PAUSED+BLOCKED = *waiting for
+judgment*, TAKEN_OVER = *you driving*, everything else = autonomous; terminal
+transitions stop the clock. Interruptions = decisions + takeovers, counted
+once each. The UI's L1 line, `conductor metrics` and the demo end-screen all
+read this single function — same derivation, every window.
+
+### 10.3 Decision quality, observable facts only
+
+`src/decision/decision-quality.ts`: `presentedAt` is recorded the first time a
+surface actually shows a decision (`DecisionQueue.present`), `responseMs` =
+resolved − created, `recurred` = the same normalized `subject` produced a
+later decision (the answer didn't stick), `outcome` classifies post-hoc from
+the execution's real terminal/active state. No prediction, no scoring.
+
+### 10.4 Semantic timeline & status language
+
+`condenseTimeline` (`src/summary/timeline.ts`) folds the event log into
+narrated activities (callId-joined command runs, grouped file edits,
+test outcomes, decision surfacings); `status-language.ts` is the one map
+(`PAUSED → "Waiting for your judgment"`) shared by CLI and web.
+
+### 10.5 The surface (`src/ui/`)
+
+`node:http` only — zero new dependencies. `startConductorUi` composes the
+*same* `createRuntime` the CLI uses (repos, DecisionQueue, TakeoverService,
+derivations), exposes JSON + actions (`/api/state`, `/api/executions/:id`,
+`resolve|present|take-over|continue|away`) and streams change ticksles over
+SSE via a single-row fingerprint poll (`PRAGMA busy_timeout` makes the
+multi-writer SQLite safe). The static app (`public/`) renders L1/L2/L3 with
+progressive disclosure and never shows raw transcripts. CLI parity:
+`conductor ui|init|metrics|timeline`, and `show` prints the seven fields.
+
+### 10.6 Safety hardening found by this phase's audit
+
+- A lifecycle event arriving while the run is **held** no longer throws
+  (turn-end during PAUSED keeps the run waiting instead of corrupting state).
+- `--accept` / `accepted` now genuinely release the one-time retry token
+  (deny picks never do); consumption is a conditional
+  `UPDATE … WHERE consumed_at IS NULL` — exactly-once across processes.
+- `require_approval` rules match **all** policy categories; new
+  `require-approval-dependency-install` rule gates package installs
+  (`pnpm add`, `npm install`, `pip install`, …) — the `dependencies` category
+  referenced earlier is no longer empty.
+
+Roadmap: Phases 0–9 complete.
