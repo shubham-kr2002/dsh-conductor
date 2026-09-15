@@ -5,3 +5,6 @@
 export * from './types/index.js';
 export * from './domain/index.js';
 export * from './storage/index.js';
+export * from './adapter/index.js';
+export * from './manager/index.js';
+export * from './cli/index.js';
