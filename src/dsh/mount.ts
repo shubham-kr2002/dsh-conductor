@@ -31,6 +31,8 @@ export interface ConductorMountOptions {
 
 export interface ConductorMount {
   plugin: { name: string; apply(ctx: CordisCtx): void };
+  /** Resolved SQLite file the control plane opened. */
+  dbPath: string;
   bridge: ConductorBridge;
   manager: ExecutionManager;
   decisions: DecisionQueue;
@@ -45,7 +47,11 @@ export interface ConductorMount {
 export function mountConductor(config: ConductorMountOptions | ConductorPluginConfig): ConductorMount {
   const cfg = config as ConductorMountOptions;
   const workspaceRoot = cfg.workspaceRoot ?? process.cwd();
-  const dbPath = cfg.dbPath ?? `${workspaceRoot}/.conductor/conductor.db`;
+  // Resolution order (documented in README · DSH installation): explicit
+  // config.dbPath > CONDUCTOR_DB_PATH env > <workspaceRoot>/.conductor/
+  // conductor.db. Nothing is placed silently in a surprising location.
+  const dbPath =
+    cfg.dbPath ?? process.env.CONDUCTOR_DB_PATH ?? `${workspaceRoot}/.conductor/conductor.db`;
 
   const runtime = createRuntime(dbPath);
   const { db, manager, decisions, delegations } = runtime;
@@ -121,6 +127,7 @@ export function mountConductor(config: ConductorMountOptions | ConductorPluginCo
 
   return {
     plugin,
+    dbPath,
     bridge,
     manager,
     decisions,

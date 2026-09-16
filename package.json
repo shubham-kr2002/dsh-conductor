@@ -29,7 +29,6 @@
     "typescript": "^7.0.2"
   },
   "dependencies": {
-    "@deepseek-ai/cordis": "file:/home/shubh/.nvm/versions/node/v24.20.0/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/cordis",
     "commander": "^15.0.0"
   }
 }
