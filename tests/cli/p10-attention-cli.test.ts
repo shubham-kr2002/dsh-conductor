@@ -12,12 +12,15 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { createRuntime, type ConductorRuntime } from '../../src/cli/commands.js';
 import { EventAdapter } from '../../src/adapter/event-adapter.js';
 
-const BIN = join(process.cwd(), 'dist-cli', 'src', 'cli', 'bin.js');
+// Resolve the CLI entry relative to THIS compiled file so the test works
+// from any build output (dist/, an agent outDir, or a clean-room tree).
+const BIN = fileURLToPath(new URL('../../src/cli/bin.js', import.meta.url));
 const DB = join(process.cwd(), 'tests', '.tmp-cli10-attention.db');
 
 function cli(args: string[]): string {
