@@ -252,7 +252,7 @@ surface while the agent keeps working.
 
 ## 9. Roadmap Status
 
-Phases 0–8 **complete**. Phase 8 delivered the DSH plugin integration: normalized host contracts, the pure Conductor bridge, the cordis mounting layer, and live cross-process approval flow (93/93 tests).
+Phases 0–10 **complete**. Phase 8 delivered the DSH plugin integration: normalized host contracts, the pure Conductor bridge, the cordis mounting layer, and live cross-process approval flow (93/93 tests).
 
 ## 10. Control Surface & Attention Intelligence (Phase 9, as built)
 
@@ -326,3 +326,111 @@ progressive disclosure and never shows raw transcripts. CLI parity:
   referenced earlier is no longer empty.
 
 Roadmap: Phases 0–9 complete.
+
+## 11. Attention OS v1 (Phase 10, as built)
+
+Phase 9 answered *"does this action need attention?"*. Phase 10 answers the
+question that actually governs a human's day: **"of everything happening,
+where should my attention go?"** — and just as importantly, *"why didn't you
+interrupt me?"* No second state machine, no event bus, no new persistence
+engine was added: Attention OS is a **pure derivation layer** on top of the
+existing executions / decisions / events / policy / attention tables, computed
+on demand and never on the event hot path.
+
+### 11.1 Attention candidates — one canonical derived representation
+
+`src/attention/attention-candidate.ts`. Every attention-worthy thing (a
+pending decision, a blocked run, a failure cluster, a delegation-covered
+action) is projected into an `AttentionCandidate`: subject, goal, agent,
+category, disposition, explainable `AttentionFactors`, and the seven-field
+decision *why* when available. Factors carry **explicit `null` when
+unmeasurable** (ambiguity of a decision that never stored evidence, blocked
+time before we recorded transitions). No numeric "AI attention score" is
+computed anywhere; ordering is by factor comparison, never by a blended
+scalar.
+
+### 11.2 Deterministic prioritization (`attention-priority.ts`)
+
+A lexicographic total order over real facts:
+
+1. blocking (is an agent stopped *right now*)
+2. consequence tier (critical > high > major > medium > low) — safety always leads
+3. effective urgency — **age escalates urgency by at most one level after a
+   5-minute grace** (anti-starvation), and low can only age up to medium:
+   *stale never becomes urgent enough to outrank a real consequence*
+4. disposition rank, 5. irreversibility, 6. ambiguity (unmeasured sorts last),
+   7. dependents, 8. **oldest-first** among equals.
+
+`priorityFacts()` narrates each placement ("Consequence HIGH · Agent blocked
+YES · Waiting 4m") so every ordering is explainable in the UI and CLI alike.
+
+### 11.3 Suppression dispositions & the interruption budget
+
+Dispositions `IGNORE|OBSERVE|SURFACE|BATCH|QUEUE|INTERRUPT|CRITICAL` are a
+presentation vocabulary layered over the unchanged SILENT…CRITICAL
+classification. **Important ≠ interrupt.** The budget (`attention-suppression.ts`)
+gives the developer exactly **one "needs you now" slot when present, zero when
+away** — CRITICAL items never demote (safety invariant) and, because they own
+the front row, they *consume* the slot so ordinary interrupts queue beneath
+them with a `whyWaiting` sentence attached. Demotion changes **presentation
+only**: the control-plane pause, the decision row, and the retry token behave
+exactly as if the item had interrupted. Nothing is ever suppressed below
+`QUEUE`; nothing is destroyed.
+
+### 11.4 Dedupe & batching with forensic honesty
+
+Duplicate deliveries collapse to one candidate (refIds preserved). Related
+observations (`test.failed` storms) cluster within a 10-minute window into one
+"3 failures grouped" headline whose `clusterIds`/`refIds` still name every
+underlying immutable event row — 21 events surface as one item, and the raw
+forensics stay one query away.
+
+### 11.5 The inverse explanation (`non-interruption-why.ts`)
+
+Every autonomous pass is explainable after the fact:
+`explainNonInterruption(event)` composes the *stored* classification metadata,
+a deterministic policy re-evaluation, reversibility, consequence tier, and any
+covering delegation into "allowed because …". Attention saved is reported as
+**`not measured`**, because we do not measure it — honesty over false
+precision. `autonomousHighlights()` lists what the system let through.
+
+### 11.6 Structured delegation — entrustment, distinct from policy
+
+`src/types/delegation.ts`, `src/delegation/delegation-service.ts`,
+`delegations` table. A delegation is **scoped** (execution or workspace),
+**categorized** (policy category + optional resource substring narrowing),
+**expiring**, **revocable**, and **audited** (rows survive revocation). One
+authority exists in v1 (`allow-autonomously`), and it always originates from a
+human (CLI/UI); agents cannot delegate to themselves. Enforcement is a single
+code path: the manager downgrades a covered PAUSE to RECORD + writes an
+immutable `policy.delegated` forensic event; the bridge gate honors the same
+cover at dispatch. **Safety invariant: an explicit human denial of the same
+subject, newer than the grant, shadows the delegation** (newest human verdict
+wins; a later explicit approval clears the shadow). Decision memory surfaces
+**offers** ("you approved this 3× — delegate?") but the service never grants on
+its own.
+
+### 11.7 The orchestrator + surfaces
+
+`buildAttentionModel({executions, decisions, events, now})` returns the fleet
+map (`🔴 needs-you / waiting / watching / ✓ working` counts, per-agent rows,
+and a transparent **attention load** LOW/MED/HIGH/OVERLOADED *with reasons*).
+It is a pure function called by the CLI (`conductor attention`, `--why`,
+`--history`) and the UI cockpit (progressive disclosure: what matters → why →
+evidence) — same derivation, same numbers, zero hot-path cost, SSE
+fingerprint unchanged (delegations folded into it).
+
+### 11.8 What is implemented vs aspirational
+
+**Implemented & tested:** everything above, incl. the deterministic 5-agent
+demo, adversarial sequences (denial-beats-delegation, budget-cannot-lose-a-
+decision, exactly-once under races, late events to finished runs), metrics
+(attention ratio, autonomous actions, deferral counts) — and the standing
+invariant that with zero delegations, behavior is identical to Phase 9.
+**Experimental:** batch-window auto-clustering headlines (heuristic
+subject-matching), the urgency-aging constant, offer phrasing.
+**Deliberately not built:** ML prioritization, attention-savings estimation,
+multi-user delegation, approval inheritance across sessions, scheduled
+digests, per-factor weighting knobs — all would add a second source of truth
+or fake precision the mission forbids.
+
