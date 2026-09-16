@@ -3,6 +3,7 @@
  */
 
 export * from './types/index.js';
+export * from './composition.js';
 export * from './domain/index.js';
 export * from './storage/index.js';
 export * from './adapter/index.js';
