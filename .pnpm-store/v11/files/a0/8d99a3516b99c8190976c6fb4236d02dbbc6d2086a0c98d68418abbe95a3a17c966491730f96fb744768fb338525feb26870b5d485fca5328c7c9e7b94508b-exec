@@ -1,0 +1,28 @@
+/**
+ * Decision quality — observable facts only
+ *
+ * A decision is not finished when a button is clicked. We record and derive
+ * what actually happened: was it shown, how fast was it answered, did the
+ * same subject come back (answer didn't stick), and where the run ended up.
+ * Nothing predictive, nothing scored — every field is a fact from stored
+ * rows, so "was this interruption necessary?" can be asked later honestly.
+ */
+import type { ConductorDecision } from '../types/decision.js';
+import type { DecisionQuality } from '../types/decision.js';
+import type { Execution } from '../domain/execution.js';
+/** Did a LATER decision for the same execution+subject appear? */
+export declare function didSubjectRecur(decision: ConductorDecision, all: ConductorDecision[]): boolean;
+/**
+ * Derive the full quality record for one resolved-or-pending decision from
+ * the decision list and the execution's current state.
+ */
+export declare function deriveDecisionQuality(decision: ConductorDecision, all: ConductorDecision[], execution: Execution | null): DecisionQuality;
+/** Aggregate quality facts over resolved decisions (observable, not judged). */
+export interface DecisionQualityRollup {
+    resolved: number;
+    medianResponseMs: number | null;
+    recurredCount: number;
+    outcomes: Partial<Record<NonNullable<DecisionQuality['outcome']>, number>>;
+}
+export declare function rollupDecisionQuality(decisions: ConductorDecision[]): DecisionQualityRollup;
+//# sourceMappingURL=decision-quality.d.ts.map

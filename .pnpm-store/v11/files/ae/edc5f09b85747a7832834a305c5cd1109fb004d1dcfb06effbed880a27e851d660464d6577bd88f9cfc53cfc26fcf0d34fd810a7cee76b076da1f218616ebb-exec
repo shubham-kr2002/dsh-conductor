@@ -1,0 +1,79 @@
+/**
+ * Conductor Attention Types
+ *
+ * Classification output of the Attention Engine: how loudly (if at all)
+ * an event should reach the developer, and what the system should do.
+ */
+/** How much developer attention an event warrants. */
+export type AttentionLevel = 'SILENT' | 'BACKGROUND' | 'DECISION' | 'CRITICAL';
+/** What the conductor should do with the event. */
+export type AttentionAction = 'CONTINUE' | 'RECORD' | 'NOTIFY' | 'PAUSE';
+export type Consequence = 'low' | 'medium' | 'high' | 'critical';
+export type Reversibility = 'reversible' | 'irreversible' | 'unknown';
+export interface AttentionClassificationInput {
+    /** Canonical event type being classified. */
+    eventType: string;
+    /** Estimated consequence of the underlying action or question. */
+    consequence: Consequence;
+    /** Whether the action can be cheaply undone. */
+    reversibility: Reversibility;
+    /** Whether the event is aligned with the current execution goal/phase. */
+    taskAligned: boolean;
+    /** Ambiguity/uncertainty in the event (0.0 = fully certain, 1.0 = fully ambiguous). */
+    uncertainty: number;
+    /** Result of the Policy Engine for this event, if applicable. */
+    policyImpact?: 'allow' | 'deny' | 'require_approval';
+    /** Confidence of the classification itself (0.0 - 1.0). */
+    confidence: number;
+}
+export interface AttentionClassification {
+    level: AttentionLevel;
+    action: AttentionAction;
+    /** Human-readable explanation of why this classification was chosen. */
+    rationale: string;
+    /** Deterministic rule id that produced this classification. */
+    ruleId: string;
+    confidence: number;
+    /**
+     * True when deterministic rules could not confidently resolve the event.
+     * Consumers may escalate to an LLM pass or conservative handling; the
+     * classification itself remains fully deterministic.
+     */
+    needsLlmReview?: boolean;
+}
+/**
+ * Where an attention candidate goes in the human's field of view.
+ * The AttentionEngine still owns classification (level/action); the
+ * orchestrator decides DISPOSITION — how much of the human this deserves.
+ * important ≠ interrupt: everything below SURFACE stays durable and
+ * discoverable; nothing consequential is ever deleted, only deferred.
+ */
+export type AttentionDisposition = 
+/** Not worth recording as attention (pure telemetry). */
+'ignore'
+/** Recorded, part of history; no human time expected. */
+ | 'observe'
+/** Shown in the control surface, no interruption pressure. */
+ | 'surface'
+/** Merged into a cluster; the human reviews the cluster, not members. */
+ | 'batch'
+/** Human attention may be needed, but it can safely wait. */
+ | 'queue'
+/** Top of the cockpit: the developer should look now. */
+ | 'interrupt'
+/** Immediate human control is justified; never budget-suppressed. */
+ | 'critical';
+/** Observable human context that legitimately changes dispositions. */
+export interface HumanAttentionContext {
+    now: number;
+    /** True when the developer explicitly marked away (return pending). */
+    away: boolean;
+    /** How many things already hold the "needs you now" slot. */
+    activeInterrupts: number;
+}
+/** Transparent load classification with its factual basis. */
+export interface AttentionLoad {
+    level: 'LOW' | 'MEDIUM' | 'HIGH' | 'OVERLOADED';
+    reasons: string[];
+}
+//# sourceMappingURL=attention.d.ts.map

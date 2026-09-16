@@ -1,0 +1,58 @@
+/**
+ * Continuation Context
+ *
+ * The structured, state-first description of an execution that lets an
+ * agent (or a human) resume work without reading the transcript. Generated
+ * at takeover-freeze and regenerated at continue time with the human's
+ * modifications merged in. Never contains model reasoning — only
+ * decisions, state, files, failures, and blockers.
+ */
+import type { Execution } from '../domain/execution.js';
+import type { ConductorEvent } from '../types/event.js';
+import type { ConductorDecision } from '../types/decision.js';
+import type { WorkspaceDiff } from './workspace-snapshot.js';
+export interface FailedApproach {
+    attempt: string;
+    error: string;
+    at: number;
+}
+export interface DecisionSummary {
+    title: string;
+    status: string;
+    answer?: string;
+}
+export interface HumanModificationSummary {
+    created: string[];
+    modified: string[];
+    deleted: string[];
+    notes?: string;
+}
+export interface ContinuationContext {
+    generatedAt: number;
+    executionId: string;
+    workspaceRoot: string;
+    originalGoal: string;
+    constraints: string[];
+    currentPhase: string;
+    progressSummary: string;
+    completedWork: string[];
+    currentFiles: string[];
+    importantDecisions: DecisionSummary[];
+    failedApproaches: FailedApproach[];
+    knownBlockers: string[];
+    pendingAction?: string;
+    humanModifications?: HumanModificationSummary;
+}
+/** Derive the structured continuation context from persisted state + recent events. */
+export declare function buildContinuationContext(input: {
+    execution: Execution;
+    recentEvents: ConductorEvent[];
+    decisions: ConductorDecision[];
+    humanModifications?: WorkspaceDiff & {
+        notes?: string;
+    };
+    maxRecentEvents?: number;
+}): ContinuationContext;
+/** Render the context as the resumption brief handed to the agent. */
+export declare function renderContinuationBrief(ctx: ContinuationContext): string;
+//# sourceMappingURL=continuation-context.d.ts.map

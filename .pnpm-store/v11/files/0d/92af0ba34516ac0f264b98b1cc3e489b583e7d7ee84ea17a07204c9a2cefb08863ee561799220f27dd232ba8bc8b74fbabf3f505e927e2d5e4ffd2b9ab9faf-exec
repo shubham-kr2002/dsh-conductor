@@ -1,0 +1,51 @@
+/**
+ * Conductor Attention Engine
+ *
+ * Deterministic, rule-based classifier that decides how loudly (if at all)
+ * an event should reach the developer. The engine exists to SUPPRESS
+ * unnecessary interruptions: low-risk autonomous work must never ping the
+ * developer, while high-consequence ambiguity and dangerous actions must.
+ *
+ * Rules are ordered data — the first matching rule wins. No LLM calls.
+ * A classification with `needsLlmReview: true` signals that deterministic
+ * rules could not confidently resolve the event, and a human (or optionally
+ * an LLM pass, out of scope here) should look closer.
+ */
+import type { AttentionClassification, AttentionClassificationInput, AttentionLevel, AttentionAction } from '../types/attention.js';
+export interface AttentionRule {
+    id: string;
+    description: string;
+    /** Higher priority runs first. */
+    priority: number;
+    when(input: AttentionClassificationInput, context: AttentionContext): boolean;
+    classify(input: AttentionClassificationInput, context: AttentionContext): Omit<AttentionClassification, 'ruleId'>;
+}
+/** Mutable context the manager maintains across events for one execution. */
+export interface AttentionContext {
+    consecutiveTestFailures: number;
+    consecutiveCommandFailures: number;
+    eventsSinceLastNotification: number;
+}
+export declare function createAttentionContext(): AttentionContext;
+export declare const DEFAULT_ATTENTION_RULES: AttentionRule[];
+/** Below this confidence, deterministic rules are considered unable to resolve the event. */
+export declare const LLM_REVIEW_CONFIDENCE_FLOOR = 0.55;
+export declare class AttentionEngine {
+    private readonly _rules;
+    constructor(rules?: AttentionRule[]);
+    getRules(): ReadonlyArray<AttentionRule>;
+    addRule(rule: AttentionRule): void;
+    /**
+     * Deterministically classify one event. Pure function of (input, context):
+     * the same inputs always produce the same classification.
+     */
+    classify(input: AttentionClassificationInput, context?: AttentionContext): AttentionClassification;
+    /**
+     * Convenience: derive a classification directly from an event payload shape
+     * produced by the Event Adapter, folding counters into context.
+     */
+    updateContextFromEvent(context: AttentionContext, eventType: string, isErrorLike: boolean): void;
+}
+export declare function levelAtLeast(level: AttentionLevel, minimum: AttentionLevel): boolean;
+export declare function actionRequiresPause(action: AttentionAction): boolean;
+//# sourceMappingURL=attention-engine.d.ts.map

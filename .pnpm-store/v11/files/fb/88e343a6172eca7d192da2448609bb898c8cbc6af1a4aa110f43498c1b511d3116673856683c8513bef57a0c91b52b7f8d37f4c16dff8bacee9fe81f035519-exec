@@ -1,0 +1,25 @@
+/**
+ * Decision explanation builder
+ *
+ * Deterministically constructs the DecisionWhy explanation from the real
+ * pipeline inputs (event payload, policy evaluation, attention
+ * classification). Nothing is invented: every field is derived from a
+ * concrete cause that already exists in the system.
+ */
+import type { ConductorEvent } from '../types/event.js';
+import type { AttentionClassification } from '../types/attention.js';
+import type { DecisionWhy, DecisionImpact } from '../types/decision.js';
+import type { PolicyEvaluationResult } from '../types/policy.js';
+export declare function blastRadiusFor(command: string, toolName: string): DecisionWhy['evidence']['blastRadius'];
+export interface BuildWhyInput {
+    event: ConductorEvent;
+    classification: AttentionClassification;
+    policy?: PolicyEvaluationResult;
+    /** Ambiguity 0..1 used by the attention engine. */
+    ambiguity: number;
+    taskAligned: boolean;
+    impact: DecisionImpact;
+    recommendation?: string;
+}
+export declare function buildDecisionWhy(input: BuildWhyInput): DecisionWhy;
+//# sourceMappingURL=decision-why.d.ts.map

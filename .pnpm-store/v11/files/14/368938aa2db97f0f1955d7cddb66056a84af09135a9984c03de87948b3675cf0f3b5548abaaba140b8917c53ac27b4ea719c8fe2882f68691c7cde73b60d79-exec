@@ -1,0 +1,104 @@
+/**
+ * Execution State Machine
+ *
+ * Enforces valid state transitions and lifecycle rules for Conductor executions.
+ */
+import { InvalidStateTransitionError } from './errors.js';
+export const TERMINAL_STATES = new Set([
+    'COMPLETED',
+    'FAILED',
+    'CANCELLED',
+]);
+export const ACTIVE_STATES = new Set([
+    'STARTING',
+    'RUNNING',
+    'WAITING',
+    'PAUSED',
+    'TAKEN_OVER',
+    'BLOCKED',
+    'HANDOFF_PENDING',
+]);
+export const VALID_TRANSITIONS = {
+    STARTING: new Set(['RUNNING', 'FAILED', 'CANCELLED']),
+    RUNNING: new Set([
+        'WAITING',
+        'PAUSED',
+        'TAKEN_OVER',
+        'BLOCKED',
+        'HANDOFF_PENDING',
+        'COMPLETED',
+        'FAILED',
+        'CANCELLED',
+    ]),
+    WAITING: new Set([
+        'RUNNING',
+        'PAUSED',
+        'TAKEN_OVER',
+        'BLOCKED',
+        'FAILED',
+        'CANCELLED',
+    ]),
+    PAUSED: new Set(['RUNNING', 'TAKEN_OVER', 'CANCELLED']),
+    TAKEN_OVER: new Set(['RUNNING', 'CANCELLED', 'FAILED']),
+    BLOCKED: new Set([
+        'RUNNING',
+        'PAUSED',
+        'TAKEN_OVER',
+        'FAILED',
+        'CANCELLED',
+    ]),
+    HANDOFF_PENDING: new Set([
+        'COMPLETED',
+        'RUNNING',
+        'FAILED',
+        'CANCELLED',
+    ]),
+    COMPLETED: new Set(),
+    FAILED: new Set(),
+    CANCELLED: new Set(),
+};
+export class ExecutionStateMachine {
+    _status;
+    _transitions = [];
+    constructor(initialStatus = 'STARTING', initialTransitions = []) {
+        this._status = initialStatus;
+        this._transitions = [...initialTransitions];
+    }
+    get currentStatus() {
+        return this._status;
+    }
+    get transitions() {
+        return this._transitions;
+    }
+    isTerminal() {
+        return TERMINAL_STATES.has(this._status);
+    }
+    isActive() {
+        return ACTIVE_STATES.has(this._status);
+    }
+    canTransitionTo(target) {
+        const validTargets = VALID_TRANSITIONS[this._status];
+        return validTargets !== undefined && validTargets.has(target);
+    }
+    getValidNextStates() {
+        const validTargets = VALID_TRANSITIONS[this._status];
+        return validTargets ? Array.from(validTargets) : [];
+    }
+    transition(to, options = {}) {
+        if (!this.canTransitionTo(to)) {
+            throw new InvalidStateTransitionError(this._status, to, options.executionId);
+        }
+        const record = {
+            from: this._status,
+            to,
+            timestamp: options.timestamp ?? Date.now(),
+            reason: options.reason,
+            actor: options.actor ?? 'system',
+            metadata: options.metadata,
+        };
+        this._status = to;
+        this._transitions.push(record);
+        return record;
+    }
+}
+//# sourceMappingURL=state-machine.js.map

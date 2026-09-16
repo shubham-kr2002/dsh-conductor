@@ -1,0 +1,49 @@
+/**
+ * Attention suppression, batching and budget
+ *
+ * The difference between an approval system and an Attention OS:
+ * important ≠ interrupt. These pure functions decide how much of the
+ * human each candidate legitimately claims — never hiding consequential
+ * information, only ordering and deferring it, always with a reason.
+ *
+ * Safety floor (invariants, Part 24):
+ *  - CRITICAL candidates are never demoted by the budget;
+ *  - pending DECISIONS never sink below 'queue' (they are durable,
+ *    visible, and the run may be held);
+ *  - suppression here affects PRESENTATION only — never execution
+ *    authority (that stays with policy/attention actions in the gate).
+ */
+import type { HumanAttentionContext } from '../types/attention.js';
+import type { AttentionCandidate } from './attention-candidate.js';
+export declare const DEFAULT_BUDGET: {
+    /** Interrupt items shown as "needs you now" while the developer is present. */
+    readonly maxInterruptsPresent: 1;
+    /** While away there is nobody to interrupt; return-to-work shows all. */
+    readonly maxInterruptsAway: 0;
+    /** Observations in one execution+category within this window cluster. */
+    readonly batchWindowMs: number;
+};
+export type BudgetPolicy = typeof DEFAULT_BUDGET;
+export interface BudgetResult {
+    items: AttentionCandidate[];
+    /** ids demoted from interrupt -> queue by the budget pass. */
+    demoted: string[];
+}
+/**
+ * The interruption budget: 5 things happened, 2 matter, 1 needs action
+ * now, 2 can wait — so the human sees exactly that shape.
+ */
+export declare function applyAttentionBudget(candidates: AttentionCandidate[], ctx: HumanAttentionContext, policy?: BudgetPolicy): BudgetResult;
+/**
+ * Batch related OBSERVATION candidates within a window into one cluster.
+ * Members are preserved in refIds/clusterIds — forensic history is never
+ * destroyed (Part 10). Decisions and execution-state candidates are
+ * never batched away.
+ */
+export declare function clusterObservations(candidates: AttentionCandidate[], policy?: BudgetPolicy): AttentionCandidate[];
+/**
+ * Collapse fully-duplicate candidates (same id or same execution+category+
+ * subject evidence arriving twice). Duplicate delivery must be safe.
+ */
+export declare function dedupeCandidates(candidates: AttentionCandidate[]): AttentionCandidate[];
+//# sourceMappingURL=attention-suppression.d.ts.map

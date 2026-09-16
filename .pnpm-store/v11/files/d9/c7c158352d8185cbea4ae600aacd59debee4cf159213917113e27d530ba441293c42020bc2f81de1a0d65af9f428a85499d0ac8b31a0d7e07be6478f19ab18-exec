@@ -1,0 +1,257 @@
+/**
+ * Phase 10 — "Attention OS" deterministic fleet demo.
+ *
+ * Where the Part 19 demo proved one agent's day, this drives the REAL
+ * multi-agent pipeline (EventAdapter → ExecutionManager.processEvent →
+ * PolicyEngine/AttentionEngine → DecisionQueue → DelegationService →
+ * buildAttentionModel) through a scripted 50-minute fleet story with
+ * five agents — atlas (payments migration), hera (api refactor),
+ * nova (docs sweep), orion (test coverage), vesta (lint cleanup) — and
+ * prints the §20 return-to-work block. Every number on the screen is a
+ * derivation over persisted rows: the interruption budget, batching,
+ * delegation forensics, take-over accounting and the attention ratio
+ * are all recomputed from the database, never hardcoded.
+ *
+ * Story beats (fictional clock shown for a 50-minute story; like P9 the
+ * real run happens in milliseconds and persisted rows are shifted onto
+ * the fictional schedule AFTER the fact via `shiftSchedule` /
+ * `rescheduleDecision`, with events pre-stamped at emit time):
+ *   1. Five executions start and do routine autonomous work (BACKGROUND).
+ *   2. NOISE STORM on orion — 3 test.failed + 1 command-failed +
+ *      2 file.changed: ZERO decisions are created (self-heal; failure
+ *      streaks only NOTIFY), while the fleet model yields ONE failure
+ *      cluster grouping the storm. "storm absorbed".
+ *   3. atlas asks a high-consequence production question → MAJOR
+ *      decision, atlas PAUSED, holds the single needs-you slot.
+ *   4. vesta `pnpm add zod` → major decision → the budget demotes it to
+ *      'queue' (durable, with its whyWaiting) — "queued, not interrupted".
+ *   5. vesta's decision is answered approve-once; a workspace
+ *      dependencies delegation (origin recurrence-offer) is granted;
+ *      hera's `pnpm add lodash` then runs COVERED: policy.delegated
+ *      forensics, zero decisions, one observation in the model —
+ *      "ran under your delegation" + explainNonInterruption bullets.
+ *   6. nova `git push --force` → CRITICAL decision: budget-immune, it
+ *      leads, and atlas's pending question is demoted to 'waiting'.
+ *   7. Developer takes over nova, edits docs/ROLLBACK.md, returns
+ *      control, and rejects the force-push decision personally.
+ *   8. Away-mark at minute 10; quiet autonomous stretch; atlas answers
+ *      its question custom, then nova/vesta/hera/atlas complete; orion
+ *      gates `helm uninstall ns demo` AFTER its away-mark and stays
+ *      pending — the one thing that heads the return-to-work brief.
+ *   9. Return, final fleet model + metrics + decision-quality rollup →
+ *      RETURN TO WORK (§20) with the "While you were away:" headline,
+ *      the attention-ratio line and the presentation-only budget tally.
+ *
+ * The demo is SELF-VERIFYING: every beat asserts its invariant with a
+ * thrown Error, so `conductor demo-os` (parent wiring, later) can never
+ * silently print a dishonest screen.
+ */
+import { type AttentionMap } from '../attention/attention-orchestrator.js';
+import { type DecisionQualityRollup } from '../decision/decision-quality.js';
+import { DecisionSlot } from './scenario.js';
+import type { ExecutionState, ExecutionStatus } from '../types/execution.js';
+export declare const ATTENTION_STORY_MINUTES = 50;
+/** The fictional fleet schedule — offsets in MINUTES from story base. */
+export declare const ATTENTION_STORY: {
+    readonly agents: readonly [{
+        readonly id: 'atlas';
+        readonly goal: 'payments migration';
+    }, {
+        readonly id: 'hera';
+        readonly goal: 'api refactor';
+    }, {
+        readonly id: 'nova';
+        readonly goal: 'docs sweep';
+    }, {
+        readonly id: 'orion';
+        readonly goal: 'test coverage';
+    }, {
+        readonly id: 'vesta';
+        readonly goal: 'lint cleanup';
+    }];
+    /** Lifecycle-transition offsets per agent (positional, like P9). */
+    readonly transitionOffsetsMin: Record<string, number[]>;
+    /** Fictional clock slots for the four decisions the story produces. */
+    readonly decisionSlots: Record<string, DecisionSlot>;
+    readonly beats: {
+        readonly storm: {
+            readonly fail1: 1.2;
+            readonly fail2: 1.6;
+            readonly fail3: 2;
+            readonly buildFail: 2.3;
+            readonly edit1: 2.6;
+            readonly edit2: 2.8;
+        };
+        readonly stormModelAt: 3.2;
+        readonly atlasQuestion: 5;
+        readonly atlasCheckAt: 5.4;
+        readonly vestaGate: 6;
+        readonly vestaCheckAt: 6.2;
+        readonly vestaApproved: 6.6;
+        readonly delegationGranted: 6.5;
+        readonly heraDelegated: 6.8;
+        readonly heraCheckAt: 7;
+        readonly novaCritical: 7.2;
+        readonly novaCheckAt: 7.4;
+        readonly novaTakeOver: 7.6;
+        readonly novaManualEdit: 8;
+        readonly novaReturnControl: 8.1;
+        readonly novaRejected: 8.3;
+        readonly atlasAnswered: 8.5;
+        readonly awayMark: 10;
+        readonly helmGate: 47.8;
+        readonly returnPresent: 49.5;
+    };
+    readonly commands: {
+        readonly vesta: 'pnpm add zod';
+        readonly hera: 'pnpm add lodash';
+        readonly nova: 'git push --force origin main';
+        readonly orion: 'helm uninstall ns demo';
+    };
+};
+export interface AttentionDemoOptions {
+    /** Workspace the fictional fleet operates in. Default cwd. */
+    workspaceRoot?: string;
+    /** SQLite file. Default `${workspaceRoot}/.conductor-demo/attention.db`. */
+    dbPath?: string;
+    /** Story "now" (end of the 50-minute story). Default Date.now(). */
+    now?: number;
+    /** Output sink. Defaults to console.log. Every line passes through. */
+    log?: (line: string) => void;
+}
+export interface AttentionDemoFacts {
+    storyMinutes: number;
+    agentsTotal: number;
+    /** Final fleet attention map (derived, not invented). */
+    map: AttentionMap & {
+        items: number;
+    };
+    /** Beat 2 — the noise storm. */
+    stormEvents: number;
+    stormDecisions: number;
+    stormPauseActions: number;
+    stormLevels: string[];
+    stormClusters: number;
+    stormClusterMembers: number;
+    /** Beat 3 — atlas's production question. */
+    atlasDecisionImpact: string;
+    atlasDecisionUrgency: string;
+    atlasHoldsNeedsYou: boolean;
+    atlasStatusAfterQuestion: string;
+    /** Beat 4 — the budget demotes vesta's install. */
+    vestaDemoted: boolean;
+    vestaWhyWaiting: boolean;
+    vestaDecisionImpact: string;
+    /** Beat 5 — delegation carries hera's install. */
+    delegationGranted: number;
+    delegatedActions: number;
+    delegationForensics: number;
+    heraDecisions: number;
+    heraFinalDisposition: string;
+    /** Beat 6 — criticality is budget-immune. */
+    novaCriticalLeads: boolean;
+    atlasDemotedToWaiting: boolean;
+    /** Beat 7 — take-over. */
+    takeovers: number;
+    novaStatusAfterTakeover: string;
+    /** End state + attention accounting (all in ms of story clock). */
+    decisionsTotal: number;
+    decisionsResolved: number;
+    decisionsPending: number;
+    interruptionsTotal: number;
+    unsafeActions: number;
+    budgetDemotions: number;
+    budgetDemotionsResolved: number;
+    budgetSuppressedLost: number;
+    heldMs: number;
+    humanControlMs: number;
+    humanAttentionMs: number;
+    autonomousMs: number;
+    fleetTotalMs: number;
+    attentionRatio: number;
+    medianResponseMs: number | null;
+    recurrences: number;
+    outcomeCompletedAfter: number;
+    eventCount: number;
+    pendingTitle: string;
+    pendingAgent: string;
+    pendingImpact: string;
+    pendingUrgency: string;
+}
+export interface AttentionAgentMetrics {
+    status: ExecutionStatus;
+    totalMs: number;
+    heldMs: number;
+    humanControlMs: number;
+    autonomousMs: number;
+    interruptions: number;
+    decisions: number;
+    pending: number;
+    takeovers: number;
+    attentionRatio: number;
+}
+export interface AttentionDemoResult {
+    startedAt: number;
+    storyBaseAt: number;
+    storyEndAt: number;
+    dbPath: string;
+    /** Final attention map (buildAttentionModel over the persisted fleet). */
+    map: AttentionMap;
+    /** Final ordered cockpit items with their human sections. */
+    orderedItems: Array<{
+        id: string;
+        agent: string;
+        disposition: string;
+        section: string;
+    }>;
+    /** Candidate ids the budget demoted at any checkpoint (presentation-only). */
+    budgetDemoted: string[];
+    delegatedActions: number;
+    batches: Array<{
+        agent: string;
+        members: number;
+    }>;
+    takeover: {
+        agent: string;
+        actor: string;
+        decisionTitle: string;
+        manualFile: string;
+        tookOverAt: number;
+        returnedAt: number;
+    };
+    metrics: {
+        perAgent: Record<string, AttentionAgentMetrics>;
+        fleet: {
+            totalMs: number;
+            heldMs: number;
+            humanControlMs: number;
+            autonomousMs: number;
+            humanAttentionMs: number;
+            decisions: number;
+            takeovers: number;
+            interruptions: number;
+            attentionRatio: number;
+        };
+        quality: DecisionQualityRollup;
+    };
+    returnToWork: string[];
+    finalScreen: string[];
+    executionIds: Record<string, string>;
+    decisionIds: Record<string, string>;
+    delegationId: string;
+    facts: AttentionDemoFacts;
+}
+/**
+ * Pure: rewrite one execution's persisted timeline onto a fictional
+ * schedule starting at `base`, positionally like P9's `reschedule` but
+ * with a per-execution offset list. Throws if the transition count
+ * disagrees with the schedule (the demo is self-verifying).
+ */
+export declare function shiftSchedule(state: ExecutionState, offsetsMin: number[], base: number): ExecutionState;
+/**
+ * Run the scripted 50-minute fleet story against a real SQLite database
+ * (via `createRuntime`, which wires DelegationService into the manager)
+ * and return the fully derived Attention OS result.
+ */
+export declare function runDemoAttention(opts?: AttentionDemoOptions): Promise<AttentionDemoResult>;
+//# sourceMappingURL=attention-os.d.ts.map

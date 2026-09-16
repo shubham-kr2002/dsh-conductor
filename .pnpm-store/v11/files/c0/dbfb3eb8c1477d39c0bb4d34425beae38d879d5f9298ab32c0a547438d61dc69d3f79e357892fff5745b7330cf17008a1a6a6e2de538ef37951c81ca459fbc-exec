@@ -1,0 +1,52 @@
+/**
+ * Conductor mount composition
+ *
+ * Wires the full stack (SQLite runtime → manager → decision queue → bridge →
+ * cordis plugin object) from a plain config, as loaded from a composition
+ * row. This is the entry a DSH profile references; nothing below it imports
+ * DSH code.
+ */
+import type { DelegationService } from '../delegation/delegation-service.js';
+import type { ExecutionManager } from '../manager/execution-manager.js';
+import type { ConductorDatabase } from '../storage/database.js';
+import type { DecisionQueue } from '../decision/decision-queue.js';
+import { ConductorBridge } from './conductor-bridge.js';
+import { type CordisCtx, type ConductorPluginConfig } from './cordis-plugin.js';
+import { type ConductorRuntime } from '../composition.js';
+export interface ConductorMountOptions {
+    goal: string;
+    workspaceRoot: string;
+    dbPath?: string;
+    autoAnswerRoutine?: boolean;
+    /** Mark the execution COMPLETED when the agent goes idle on a finished turn. */
+    completeOnIdle?: boolean;
+    /** Extra hard constraints recorded on the execution. */
+    constraints?: string[];
+    /**
+     * Re-attach to the workspace's newest OPEN execution instead of always
+     * starting a fresh one. Headless DSH ends the run when the gate holds, so
+     * the human's retry arrives as a NEW process over the SAME execution —
+     * that is where cross-process approval tokens live. Default false (P8
+     * semantics unchanged); the bundle entry turns it on.
+     */
+    reuseOpenExecution?: boolean;
+}
+export interface ConductorMount {
+    plugin: {
+        name: string;
+        apply(ctx: CordisCtx): void;
+    };
+    /** Resolved SQLite file the control plane opened. */
+    dbPath: string;
+    bridge: ConductorBridge;
+    manager: ExecutionManager;
+    decisions: DecisionQueue;
+    delegations: DelegationService;
+    /** Full composed control plane (takeover/handoff included) via one root. */
+    runtime: ConductorRuntime;
+    db: ConductorDatabase;
+    executionId: string;
+    close(): void;
+}
+export declare function mountConductor(config: ConductorMountOptions | ConductorPluginConfig): ConductorMount;
+//# sourceMappingURL=mount.d.ts.map

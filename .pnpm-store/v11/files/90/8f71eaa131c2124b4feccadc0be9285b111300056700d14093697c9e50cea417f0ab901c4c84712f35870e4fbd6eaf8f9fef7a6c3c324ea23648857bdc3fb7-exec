@@ -1,0 +1,50 @@
+/**
+ * Conductor × Cordis mounting layer
+ *
+ * The only module that speaks raw DSH/cordis plumbing: it adapts the real
+ * waterfall semantics (call `next()` to delegate, return a value to claim;
+ * `session/event` delivers `(session, event)`; `agent/pre-step` rejects
+ * CONSUME claimed inbox messages) into the normalized ConductorHostBindings
+ * the pure ConductorBridge was built against, and projects the result back.
+ *
+ * Everything below reads only scalar leaf fields off live DSH objects — no
+ * serialization of Agents, Contexts, or messages into Conductor storage.
+ *
+ * Mount as a static composition row pointing at the compiled module:
+ *   - name: '<abs-path>/dist/src/dsh/cordis-plugin.js'
+ *     config:
+ *       workspaceRoot: /path/to/project
+ *       dbPath: /path/to/project/.conductor/conductor.db
+ *       goal: 'what the agent is hired to finish'
+ */
+import type { ConductorBridge } from './conductor-bridge.js';
+import type { HostSessionEvent } from './host-surface.js';
+export interface CordisCtx {
+    on(name: string, listener: (...args: any[]) => any): () => void;
+    effect(execute: () => void | (() => void)): void;
+    provide?(name: string, value: unknown): () => void;
+}
+export interface ConductorPluginConfig {
+    /** Human-readable goal for the managed execution. */
+    goal?: string;
+    workspaceRoot?: string;
+    /** SQLite path; default ./.conductor/conductor.db under workspaceRoot. */
+    dbPath?: string;
+    /** Let Conductor answer routine recommended questions for the human. */
+    autoAnswerRoutine?: boolean;
+    /**
+     * Pre-constructed bridge (CLI/tests). When omitted, the plugin builds a
+     * runtime via createRuntime() using dbPath/workspaceRoot/goal.
+     */
+    bridge?: ConductorBridge;
+}
+export declare function createConductorCordisPlugin(bridge: ConductorBridge, opts: {
+    sessionEventToBridge: (evt: HostSessionEvent) => void;
+    log?: (msg: string) => void;
+}): {
+    name: string;
+    apply(ctx: CordisCtx): void;
+};
+/** Default export for the plugin loader (`exports.default ?? exports`). */
+export default createConductorCordisPlugin;
+//# sourceMappingURL=cordis-plugin.d.ts.map

@@ -1,0 +1,18 @@
+/**
+ * Approval subjects
+ *
+ * A stable identity for what a tool call DOES, used to match a human's
+ * recorded decision ("you approved this exact action once") against the
+ * agent's retry of the same action. Deliberately normalized: whitespace
+ * collapsed, only the operative argument included.
+ */
+export function approvalSubject(toolName, args) {
+    if (toolName === 'bash' || toolName === 'pwsh') {
+        return `${toolName}:${String(args.command ?? '').trim().replace(/\s+/g, ' ')}`;
+    }
+    if (toolName === 'write' || toolName === 'edit' || toolName === 'str_replace_editor') {
+        return `${toolName}:${String(args.file_path ?? args.path ?? '')}`;
+    }
+    return `${toolName}:${JSON.stringify(args).slice(0, 200)}`;
+}
+//# sourceMappingURL=approval-subject.js.map

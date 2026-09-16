@@ -1,0 +1,72 @@
+/**
+ * SQLite Database Connection & Management
+ *
+ * Uses Node.js native `node:sqlite` (DatabaseSync).
+ */
+import { DatabaseSync } from 'node:sqlite';
+import { dirname } from 'node:path';
+import { mkdirSync } from 'node:fs';
+import { SCHEMA_V1 } from './schema.js';
+export class ConductorDatabase {
+    _db = null;
+    path;
+    constructor(options = {}) {
+        this.path = options.path ?? ':memory:';
+        this.init(options.enableWal ?? true);
+    }
+    init(enableWal) {
+        if (this.path !== ':memory:') {
+            mkdirSync(dirname(this.path), { recursive: true });
+        }
+        this._db = new DatabaseSync(this.path);
+        // Pragmas
+        this._db.exec('PRAGMA foreign_keys = ON;');
+        // CLI, mounted plugin, and the UI server may write concurrently.
+        this._db.exec('PRAGMA busy_timeout = 5000;');
+        if (this.path !== ':memory:' && enableWal) {
+            this._db.exec('PRAGMA journal_mode = WAL;');
+        }
+        // Apply schema
+        this._db.exec(SCHEMA_V1);
+        this.migrate();
+    }
+    /**
+     * Idempotent column additions for databases created by earlier schema
+     * versions (CREATE TABLE IF NOT EXISTS never touches existing tables).
+     */
+    migrate() {
+        const wanted = [
+            ['decisions', 'source_event_id', 'TEXT'],
+            ['decisions', 'dedupe_key', 'TEXT'],
+            ['decisions', 'subject', 'TEXT'],
+            ['decisions', 'consumed_at', 'INTEGER'],
+            ['decisions', 'why_json', 'TEXT'],
+            ['decisions', 'quality_json', 'TEXT'],
+        ];
+        for (const [table, column, ddl] of wanted) {
+            const cols = this.raw.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+            if (!cols.includes(column)) {
+                this.raw.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+            }
+        }
+    }
+    get raw() {
+        if (!this._db) {
+            throw new Error('Database is closed');
+        }
+        return this._db;
+    }
+    exec(sql) {
+        this.raw.exec(sql);
+    }
+    close() {
+        if (this._db) {
+            this._db.close();
+            this._db = null;
+        }
+    }
+    isOpen() {
+        return this._db !== null;
+    }
+}
+//# sourceMappingURL=database.js.map

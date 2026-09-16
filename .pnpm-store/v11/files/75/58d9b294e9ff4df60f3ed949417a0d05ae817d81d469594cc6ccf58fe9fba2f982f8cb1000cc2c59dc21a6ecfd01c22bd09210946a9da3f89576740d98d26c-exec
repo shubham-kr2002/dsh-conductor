@@ -1,0 +1,122 @@
+/**
+ * Attention history
+ *
+ * The honest post-mortem of the Attention OS: "where did my attention go,
+ * and what did Conductor suppress while I wasn't looking?" Every entry is
+ * derived from durable rows already in the control plane (decisions,
+ * events, executions) — nothing is stored twice, nothing is invented.
+ *
+ * Invariant honored here: attention saved is NEVER reported, because it
+ * has never been measured. The renderer says so literally.
+ */
+import type { Execution } from '../domain/execution.js';
+import type { ConductorDecision } from '../types/decision.js';
+import type { ConductorEvent } from '../types/event.js';
+import type { PolicyCategory } from '../types/policy.js';
+import { type AttentionModel } from '../attention/attention-orchestrator.js';
+import type { ConductorRuntime } from '../cli/commands.js';
+/** Bounded event read: newest rows per execution, never the full log. */
+export declare const ATTENTION_HISTORY_EVENT_CAP = 300;
+export interface AttentionHistoryInput {
+    executions: Execution[];
+    decisions: ConductorDecision[];
+    events: ConductorEvent[];
+    /** Window start (inclusive). */
+    since: number;
+    /** Window end (inclusive); defaults to the newest timestamp seen. */
+    until?: number;
+    /** Candidate ids the attention budget demoted this pass, when known. */
+    budgetDemoted?: string[];
+}
+/** A request that actually reached the human inside the window. */
+export interface InterruptedFact {
+    decisionId: string;
+    title: string;
+    /** answered = accepted/custom, refused = rejected, unanswered = expired/cancelled/still-open-but-shown. */
+    outcome: 'answered' | 'refused' | 'unanswered';
+    /** resolvedAt - createdAt when a verdict exists; null otherwise. */
+    responseMs: number | null;
+    /** The same subject produced a LATER decision (answer didn't stick). */
+    recurred: boolean;
+}
+/** A pending decision that was durably visible but not put in front of you. */
+export interface DeferredFact {
+    decisionId: string;
+    title: string;
+    /** budget = demoted by the interruption budget, away = you were away, queue = simply queued behind. */
+    reason: 'budget' | 'queue' | 'away';
+}
+/** One recorded action that ran on your delegated authority. */
+export interface DelegatedFact {
+    command: string;
+    category: string;
+    delegationId: string;
+    grantedBy: string;
+}
+/** A notable event that was BACKGROUND/RECORD-classified (observed, not surfaced). */
+export interface ObservationFact {
+    kind: 'test.failed' | 'command.failed';
+    summary: string;
+}
+export interface RecurringSubject {
+    subject: string;
+    count: number;
+}
+export interface CategoryRollup {
+    accepted: number;
+    rejected: number;
+    pending: number;
+}
+export interface AttentionHistory {
+    window: {
+        since: number;
+        until: number;
+    };
+    interrupted: InterruptedFact[];
+    deferred: DeferredFact[];
+    delegated: DelegatedFact[];
+    observations: ObservationFact[];
+    recurringSubjects: RecurringSubject[];
+    /** policy-category → verdict counts (categories with zero decisions are absent). */
+    categories: Partial<Record<PolicyCategory, CategoryRollup>>;
+    totals: {
+        decisions: number;
+        takeovers: number;
+        autonomousActions: number;
+    };
+}
+/**
+ * Build the derived attention history. Deterministic: identical rows +
+ * identical window produce an identical object (stable ordering everywhere,
+ * no clock reads, no invented fields).
+ */
+export declare function buildAttentionHistory(input: AttentionHistoryInput): AttentionHistory;
+/** Human-readable history, in the style of the existing renderers. */
+export declare function renderAttentionHistory(h: AttentionHistory): string;
+export interface AttentionRows {
+    executions: Execution[];
+    decisions: ConductorDecision[];
+    events: ConductorEvent[];
+}
+/**
+ * Load bounded rows from the control plane: every execution, every
+ * decision, and the newest ATTENTION_HISTORY_EVENT_CAP events per
+ * execution. `executionId` narrows to one run.
+ */
+export declare function loadAttentionRows(rt: ConductorRuntime, opts?: {
+    executionId?: string;
+}): AttentionRows;
+export interface AttentionFromRuntimeOptions {
+    executionId?: string;
+    /** Override the history window start (default: oldest row seen). */
+    since?: number;
+}
+/**
+ * One load, both views: the live attention model plus the derived history
+ * (sharing the budget-demoted ids so deferral reasons are exact).
+ */
+export declare function attentionFromRuntime(rt: ConductorRuntime, now?: number, opts?: AttentionFromRuntimeOptions): {
+    model: AttentionModel;
+    history: AttentionHistory;
+};
+//# sourceMappingURL=attention-history.d.ts.map

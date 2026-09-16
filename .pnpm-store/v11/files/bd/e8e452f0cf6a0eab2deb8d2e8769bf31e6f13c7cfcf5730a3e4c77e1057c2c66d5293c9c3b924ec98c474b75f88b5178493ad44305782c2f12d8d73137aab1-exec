@@ -1,0 +1,11 @@
+/**
+ * Human delegation
+ *
+ * What this human has explicitly entrusted to the agent — a distinct
+ * concept from Policy (what Conductor is configured to allow), Decision
+ * (what the human answered for one event), and Intent (what the human is
+ * trying to accomplish). Delegations are scoped, expiring, revocable,
+ * audited, and ALWAYS subordinate to an explicit current denial.
+ */
+export {};
+//# sourceMappingURL=delegation.js.map

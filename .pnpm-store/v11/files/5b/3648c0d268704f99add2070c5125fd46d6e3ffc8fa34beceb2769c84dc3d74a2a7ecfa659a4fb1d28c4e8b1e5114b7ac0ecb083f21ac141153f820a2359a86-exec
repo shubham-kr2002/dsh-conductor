@@ -1,0 +1,36 @@
+/**
+ * SQLite Execution Repository
+ */
+import type { ConductorDatabase } from './database.js';
+import { Execution } from '../domain/execution.js';
+import type { ExecutionStatus } from '../types/execution.js';
+export interface ExecutionFilter {
+    status?: ExecutionStatus;
+    limit?: number;
+    offset?: number;
+}
+export interface IExecutionRepository {
+    save(execution: Execution): void;
+    findById(id: string): Execution | null;
+    list(filter?: ExecutionFilter): Execution[];
+    /** Newest non-terminal execution whose state.workspaceRoot matches. */
+    findActiveByWorkspace(workspaceRoot: string): Execution | null;
+    delete(id: string): boolean;
+    count(status?: ExecutionStatus): number;
+}
+export declare class SqliteExecutionRepository implements IExecutionRepository {
+    private readonly db;
+    constructor(db: ConductorDatabase);
+    save(execution: Execution): void;
+    findById(id: string): Execution | null;
+    /**
+     * Adoption lookup: the newest open execution for a workspace. A DSH run
+     * that was blocked by a paused run must be able to RESUME the same
+     * execution (its approval tokens live there) when relaunched.
+     */
+    findActiveByWorkspace(workspaceRoot: string): Execution | null;
+    list(filter?: ExecutionFilter): Execution[];
+    delete(id: string): boolean;
+    count(status?: ExecutionStatus): number;
+}
+//# sourceMappingURL=execution-repository.d.ts.map

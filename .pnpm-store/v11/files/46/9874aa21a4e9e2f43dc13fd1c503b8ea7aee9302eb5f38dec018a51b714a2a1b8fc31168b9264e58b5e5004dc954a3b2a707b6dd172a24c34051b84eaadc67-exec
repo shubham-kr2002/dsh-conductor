@@ -1,0 +1,64 @@
+/**
+ * Execution Entity
+ *
+ * Core aggregate representing an autonomous agent execution managed by Conductor.
+ */
+import type { ExecutionState, ExecutionStatus, WorkspaceState, AgentInfo, HumanInterventionRecord, ExecutionMetrics, ExecutionTimestamps, StateTransitionRecord } from '../types/execution.js';
+export interface CreateExecutionOptions {
+    id?: string;
+    goal: string;
+    workspaceRoot: string;
+    constraints?: string[];
+    agent?: Partial<AgentInfo>;
+    initialPhase?: string;
+}
+export declare class Execution {
+    readonly id: string;
+    readonly goal: string;
+    readonly constraints: string[];
+    private readonly _stateMachine;
+    readonly workspace: WorkspaceState;
+    readonly agent: AgentInfo;
+    currentPhase: string;
+    progressSummary: string;
+    readonly completedWork: string[];
+    nextAction?: string;
+    readonly decisions: string[];
+    readonly interventions: HumanInterventionRecord[];
+    readonly risks: string[];
+    readonly metrics: ExecutionMetrics;
+    readonly timestamps: ExecutionTimestamps;
+    constructor(state: ExecutionState);
+    static create(options: CreateExecutionOptions): Execution;
+    get status(): ExecutionStatus;
+    /** Point this execution at the agent now responsible for it (handoff). */
+    reassignAgent(agentId: string): void;
+    get transitions(): ReadonlyArray<StateTransitionRecord>;
+    isTerminal(): boolean;
+    isActive(): boolean;
+    private assertNotTerminated;
+    private recordTouch;
+    start(actor?: 'agent' | 'human' | 'system'): StateTransitionRecord;
+    pause(reason?: string, actor?: 'human' | 'system' | 'policy' | 'attention'): StateTransitionRecord;
+    resume(reason?: string, actor?: 'human' | 'system'): StateTransitionRecord;
+    wait(reason?: string): StateTransitionRecord;
+    block(reason: string): StateTransitionRecord;
+    takeOver(actor?: string, notes?: string): StateTransitionRecord;
+    continueFromTakeOver(actor?: string, notes?: string, filesChanged?: string[]): StateTransitionRecord;
+    requestHandoff(reason: string, toAgentId?: string): StateTransitionRecord;
+    complete(summary?: string): StateTransitionRecord;
+    fail(error: string): StateTransitionRecord;
+    cancel(reason?: string, actor?: 'human' | 'system'): StateTransitionRecord;
+    recordFileChange(filePath: string, action: 'created' | 'modified' | 'deleted'): void;
+    recordToolCall(): void;
+    recordCommand(exitCode: number): void;
+    recordTestRun(passed: boolean): void;
+    addDecision(decisionId: string): void;
+    addCompletedWork(work: string): void;
+    addRisk(risk: string): void;
+    setPhase(phase: string): void;
+    setProgressSummary(summary: string): void;
+    setNextAction(action: string): void;
+    toState(): ExecutionState;
+}
+//# sourceMappingURL=execution.d.ts.map

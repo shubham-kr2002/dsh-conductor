@@ -1,0 +1,82 @@
+/**
+ * Decision Queue
+ *
+ * Persistent queue of human decisions, prioritized by consequence and
+ * urgency. The developer resolves decisions with accept / reject / custom
+ * answers, without ever reading the execution transcript.
+ */
+import type { IDecisionRepository } from '../storage/decision-repository.js';
+import type { ConductorDecision, DecisionImpact, DecisionOption, DecisionUrgency } from '../types/decision.js';
+import type { IExecutionRepository } from '../storage/execution-repository.js';
+export interface CreateDecisionInput {
+    executionId: string;
+    title: string;
+    question: string;
+    context: string;
+    options?: DecisionOption[];
+    recommendation?: string;
+    impact: DecisionImpact;
+    urgency: DecisionUrgency;
+    confidence: number;
+    /** Link back to the ConductorEvent that triggered this decision. */
+    sourceEventId?: string;
+    /** Coalescing key: one pending decision per key (e.g. per tool-call id). */
+    dedupeKey?: string;
+    /** Normalized identity of the action awaiting this decision. */
+    subject?: string;
+    /** Structured explanation for the developer (built once at creation). */
+    why?: import('../types/decision.js').DecisionWhy;
+    ttlMs?: number;
+}
+/**
+ * Deterministic priority score: consequence dominates, urgency breaks ties,
+ * then lower confidence (more ambiguity needing judgment) ranks higher,
+ * then FIFO on age.
+ */
+export declare function decisionPriority(d: ConductorDecision): number;
+export declare class DecisionQueue {
+    private readonly decisionRepo;
+    private readonly executionRepo;
+    constructor(decisionRepo: IDecisionRepository, executionRepo: IExecutionRepository);
+    create(input: CreateDecisionInput): ConductorDecision;
+    /** Pending decisions, highest priority first. */
+    pending(executionId?: string): ConductorDecision[];
+    /**
+     * Record that a surface showed this decision to the human (observable
+     * 'presented' fact, set once). Cheap no-op on already-presented/resolved.
+     */
+    present(id: string): void;
+    get(id: string): ConductorDecision;
+    /** All decisions (any status) for an execution, in priority order. */
+    list(executionId?: string): ConductorDecision[];
+    /**
+     * Resolve a decision. `accepted` approves the action (granting a
+     * one-time retry token when the decision carries a `subject`),
+     * `rejected` declines, `custom` supplies developer text (optionally
+     * naming an option). Returns the updated decision.
+     */
+    resolve(id: string, outcome: 'accepted' | 'rejected' | 'custom', opts?: {
+        answerBy?: string;
+        selectedOptionId?: string;
+        customValue?: string;
+        feedback?: string;
+        resumeExecution?: boolean;
+    }): ConductorDecision;
+    /**
+     * Cross-process approval token: consume one RESOLVED-APPROVED decision
+     * whose subject matches the agent's retried action. Written by whichever
+     * process resolved it (e.g. the CLI), read by the mounted plugin gate.
+     * Approve-once semantics: returns true at most once per decision.
+     */
+    consumeApproval(executionId: string, subject: string): boolean;
+    cancel(id: string, reason?: string): ConductorDecision;
+    /**
+     * Resume the execution once no pending decision remains. BLOCKED keeps its
+     * distinct semantics (explicit take-over/continue) and is never resumed by
+     * decision resolution.
+     */
+    private maybeResume;
+    /** Mark expired pending decisions; returns how many expired. */
+    expireStale(executionId?: string): number;
+}
+//# sourceMappingURL=decision-queue.d.ts.map

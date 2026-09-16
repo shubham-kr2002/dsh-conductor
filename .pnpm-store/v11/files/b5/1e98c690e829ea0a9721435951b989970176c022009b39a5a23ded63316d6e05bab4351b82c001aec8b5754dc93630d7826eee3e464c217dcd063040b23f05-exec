@@ -1,0 +1,8 @@
+/**
+ * Conductor Execution State Types
+ *
+ * Defines the complete lifecycle states, state transitions, and persistent
+ * state representation for an autonomous execution.
+ */
+export {};
+//# sourceMappingURL=execution.js.map

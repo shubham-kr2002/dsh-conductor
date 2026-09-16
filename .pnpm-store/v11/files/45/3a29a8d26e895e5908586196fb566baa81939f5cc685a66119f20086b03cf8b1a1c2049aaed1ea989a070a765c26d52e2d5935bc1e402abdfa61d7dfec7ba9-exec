@@ -1,0 +1,43 @@
+/**
+ * Conductor Domain Errors
+ */
+import type { ExecutionStatus } from '../types/execution.js';
+export declare class ConductorError extends Error {
+    readonly code: string;
+    constructor(message: string, code?: string);
+}
+export declare class InvalidStateTransitionError extends ConductorError {
+    readonly from: ExecutionStatus;
+    readonly to: ExecutionStatus;
+    readonly executionId?: string | undefined;
+    constructor(from: ExecutionStatus, to: ExecutionStatus, executionId?: string | undefined, message?: string);
+}
+export declare class ExecutionNotFoundError extends ConductorError {
+    readonly executionId: string;
+    constructor(executionId: string);
+}
+export declare class DecisionNotFoundError extends ConductorError {
+    readonly decisionId: string;
+    constructor(decisionId: string);
+}
+export declare class ExecutionAlreadyActiveError extends ConductorError {
+    readonly executionId: string;
+    readonly currentStatus: ExecutionStatus;
+    constructor(executionId: string, currentStatus: ExecutionStatus);
+}
+export declare class ExecutionTerminatedError extends ConductorError {
+    readonly executionId: string;
+    readonly terminalStatus: ExecutionStatus;
+    constructor(executionId: string, terminalStatus: ExecutionStatus);
+}
+export declare class PolicyViolationError extends ConductorError {
+    readonly category: string;
+    readonly reason: string;
+    readonly ruleId?: string | undefined;
+    constructor(category: string, reason: string, ruleId?: string | undefined);
+}
+export declare class TakeoverError extends ConductorError {
+    readonly executionId: string;
+    constructor(executionId: string, message: string);
+}
+//# sourceMappingURL=errors.d.ts.map

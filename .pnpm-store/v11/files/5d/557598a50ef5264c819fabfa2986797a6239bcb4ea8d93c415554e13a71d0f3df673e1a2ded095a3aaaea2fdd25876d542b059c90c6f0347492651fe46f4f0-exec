@@ -1,0 +1,37 @@
+/**
+ * Composition root
+ *
+ * The single place that assembles the Conductor runtime (storage →
+ * repositories → services → manager). CLI, UI server, mounted DSH plugin
+ * and demos all compose through here, so there is exactly one definition
+ * of "what the control plane contains".
+ */
+import { ConductorDatabase } from './storage/database.js';
+import { SqliteExecutionRepository } from './storage/execution-repository.js';
+import { SqliteEventRepository } from './storage/event-repository.js';
+import { SqliteDecisionRepository } from './storage/decision-repository.js';
+import { SqliteDelegationRepository } from './storage/delegation-repository.js';
+import { SqliteTakeoverRepository } from './storage/takeover-repository.js';
+import { SqliteHandoffRepository } from './storage/handoff-repository.js';
+import { DecisionQueue } from './decision/decision-queue.js';
+import { DelegationService } from './delegation/delegation-service.js';
+import { TakeoverService } from './takeover/takeover-service.js';
+import { HandoffService } from './handoff/handoff-service.js';
+import { ExecutionManager } from './manager/execution-manager.js';
+export declare function resolveDbPath(): string;
+export interface ConductorRuntime {
+    manager: ExecutionManager;
+    decisions: DecisionQueue;
+    takeover: TakeoverService;
+    handoff: HandoffService;
+    execRepo: SqliteExecutionRepository;
+    eventRepo: SqliteEventRepository;
+    decisionRepo: SqliteDecisionRepository;
+    takeoverRepo: SqliteTakeoverRepository;
+    handoffRepo: SqliteHandoffRepository;
+    delegationRepo: SqliteDelegationRepository;
+    delegations: DelegationService;
+    db: ConductorDatabase;
+}
+export declare function createRuntime(dbPath?: string): ConductorRuntime;
+//# sourceMappingURL=composition.d.ts.map

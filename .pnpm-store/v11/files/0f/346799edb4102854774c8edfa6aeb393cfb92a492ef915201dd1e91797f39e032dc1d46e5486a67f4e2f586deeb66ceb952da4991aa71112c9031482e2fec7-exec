@@ -1,0 +1,11 @@
+/**
+ * Normalized DSH Host Surface
+ *
+ * Structural mirrors of the REAL DSH extension-point payloads and return
+ * values (verified against dsh-tools, dsh-agent-loop, dsh-user-questions,
+ * dsh-user-approval, dsh-session lib/types). Names and shapes match DSH so
+ * the cordis mounting layer is a thin projection, and bridge logic stays
+ * free of DSH imports while unit-testing against plain objects.
+ */
+export {};
+//# sourceMappingURL=host-surface.js.map

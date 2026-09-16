@@ -1,0 +1,146 @@
+/**
+ * Conductor SQLite Database Schema
+ */
+export const SCHEMA_V1 = `
+CREATE TABLE IF NOT EXISTS executions (
+  id TEXT PRIMARY KEY,
+  goal TEXT NOT NULL,
+  status TEXT NOT NULL,
+  state_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  completed_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_executions_status ON executions(status);
+CREATE INDEX IF NOT EXISTS idx_executions_updated_at ON executions(updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS execution_events (
+  id TEXT PRIMARY KEY,
+  execution_id TEXT NOT NULL,
+  type TEXT NOT NULL,
+  source TEXT NOT NULL,
+  timestamp INTEGER NOT NULL,
+  payload_json TEXT NOT NULL,
+  metadata_json TEXT,
+  FOREIGN KEY(execution_id) REFERENCES executions(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_events_exec_id ON execution_events(execution_id, timestamp ASC);
+CREATE INDEX IF NOT EXISTS idx_events_type ON execution_events(type);
+
+CREATE TABLE IF NOT EXISTS execution_transitions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  execution_id TEXT NOT NULL,
+  from_state TEXT NOT NULL,
+  to_state TEXT NOT NULL,
+  timestamp INTEGER NOT NULL,
+  reason TEXT,
+  actor TEXT,
+  metadata_json TEXT,
+  FOREIGN KEY(execution_id) REFERENCES executions(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_transitions_exec_id ON execution_transitions(execution_id, timestamp ASC);
+
+CREATE TABLE IF NOT EXISTS decisions (
+  id TEXT PRIMARY KEY,
+  execution_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  question TEXT NOT NULL,
+  context TEXT NOT NULL,
+  impact TEXT NOT NULL,
+  urgency TEXT NOT NULL,
+  confidence REAL NOT NULL,
+  status TEXT NOT NULL,
+  options_json TEXT NOT NULL,
+  recommendation TEXT,
+  resolution_json TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  expires_at INTEGER,
+  source_event_id TEXT,
+  dedupe_key TEXT,
+  subject TEXT,
+  consumed_at INTEGER,
+  why_json TEXT,
+  quality_json TEXT,
+  FOREIGN KEY(execution_id) REFERENCES executions(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_decisions_exec_id ON decisions(execution_id);
+CREATE INDEX IF NOT EXISTS idx_decisions_status ON decisions(status);
+
+CREATE TABLE IF NOT EXISTS interventions (
+  id TEXT PRIMARY KEY,
+  execution_id TEXT NOT NULL,
+  type TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  notes TEXT,
+  files_json TEXT,
+  timestamp INTEGER NOT NULL,
+  FOREIGN KEY(execution_id) REFERENCES executions(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_interventions_exec_id ON interventions(execution_id);
+
+CREATE TABLE IF NOT EXISTS policies (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  category TEXT NOT NULL,
+  description TEXT NOT NULL,
+  action TEXT NOT NULL,
+  match_json TEXT NOT NULL,
+  reason TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_policies_category ON policies(category);
+
+CREATE TABLE IF NOT EXISTS handoffs (
+  id TEXT PRIMARY KEY,
+  execution_id TEXT NOT NULL,
+  from_agent_id TEXT NOT NULL,
+  to_agent_id TEXT,
+  state_json TEXT NOT NULL,
+  timestamp INTEGER NOT NULL,
+  FOREIGN KEY(execution_id) REFERENCES executions(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_handoffs_exec_id ON handoffs(execution_id);
+
+CREATE TABLE IF NOT EXISTS takeovers (
+  id TEXT PRIMARY KEY,
+  execution_id TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  status TEXT NOT NULL,
+  snapshot_json TEXT NOT NULL,
+  continuation_json TEXT NOT NULL,
+  human_modifications_json TEXT,
+  notes TEXT,
+  started_at INTEGER NOT NULL,
+  returned_at INTEGER,
+  FOREIGN KEY(execution_id) REFERENCES executions(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_takeovers_exec_id ON takeovers(execution_id, started_at DESC);
+
+CREATE TABLE IF NOT EXISTS delegations (
+  id TEXT PRIMARY KEY,
+  execution_id TEXT,
+  scope TEXT NOT NULL,
+  category TEXT NOT NULL,
+  resource_pattern TEXT,
+  authority TEXT NOT NULL,
+  origin TEXT NOT NULL,
+  granted_by TEXT NOT NULL,
+  granted_at INTEGER NOT NULL,
+  expires_at INTEGER,
+  revoked_at INTEGER,
+  revoked_by TEXT,
+  note TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_delegations_active ON delegations(revoked_at, expires_at);
+`;
+//# sourceMappingURL=schema.js.map

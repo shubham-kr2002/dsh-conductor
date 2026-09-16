@@ -1,0 +1,8 @@
+/**
+ * Conductor Attention Types
+ *
+ * Classification output of the Attention Engine: how loudly (if at all)
+ * an event should reach the developer, and what the system should do.
+ */
+export {};
+//# sourceMappingURL=attention.js.map

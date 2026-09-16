@@ -1,0 +1,23 @@
+/**
+ * Handoff Repository
+ *
+ * Persists structured handoff state so one agent can resume an execution
+ * with the other agent's full, transcript-free context.
+ */
+import type { ConductorDatabase } from './database.js';
+import type { StructuredHandoffState } from '../types/handoff.js';
+export interface IHandoffRepository {
+    save(handoff: StructuredHandoffState): void;
+    findById(id: string): StructuredHandoffState | null;
+    listByExecution(executionId: string): StructuredHandoffState[];
+    latestForExecution(executionId: string): StructuredHandoffState | null;
+}
+export declare class SqliteHandoffRepository implements IHandoffRepository {
+    private readonly db;
+    constructor(db: ConductorDatabase);
+    save(handoff: StructuredHandoffState): void;
+    findById(id: string): StructuredHandoffState | null;
+    listByExecution(executionId: string): StructuredHandoffState[];
+    latestForExecution(executionId: string): StructuredHandoffState | null;
+}
+//# sourceMappingURL=handoff-repository.d.ts.map

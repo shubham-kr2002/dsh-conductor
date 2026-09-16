@@ -1,0 +1,10 @@
+/**
+ * Approval subjects
+ *
+ * A stable identity for what a tool call DOES, used to match a human's
+ * recorded decision ("you approved this exact action once") against the
+ * agent's retry of the same action. Deliberately normalized: whitespace
+ * collapsed, only the operative argument included.
+ */
+export declare function approvalSubject(toolName: string, args: Record<string, unknown>): string;
+//# sourceMappingURL=approval-subject.d.ts.map

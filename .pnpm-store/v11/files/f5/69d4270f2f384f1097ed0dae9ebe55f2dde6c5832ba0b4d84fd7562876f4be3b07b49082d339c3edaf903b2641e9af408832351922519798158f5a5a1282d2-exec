@@ -1,0 +1,25 @@
+/**
+ * Delegation Repository
+ *
+ * Persistence for explicit human delegations. Rows are immutable facts of
+ * trust: granting creates, revoking stamps (revoked_at/by) rather than
+ * deleting, so the audit trail survives every change of mind.
+ */
+import type { ConductorDatabase } from './database.js';
+import type { Delegation } from '../types/delegation.js';
+export interface IDelegationRepository {
+    save(delegation: Delegation): void;
+    findById(id: string): Delegation | null;
+    /** Active (not revoked, not expired at `now`), optionally per execution. */
+    listActive(now: number, executionId?: string): Delegation[];
+    listAll(): Delegation[];
+}
+export declare class SqliteDelegationRepository implements IDelegationRepository {
+    private readonly db;
+    constructor(db: ConductorDatabase);
+    save(d: Delegation): void;
+    findById(id: string): Delegation | null;
+    listActive(now: number, executionId?: string): Delegation[];
+    listAll(): Delegation[];
+}
+//# sourceMappingURL=delegation-repository.d.ts.map

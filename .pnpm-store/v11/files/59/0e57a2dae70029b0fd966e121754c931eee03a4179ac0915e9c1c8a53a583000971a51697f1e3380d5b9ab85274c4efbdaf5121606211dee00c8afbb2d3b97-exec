@@ -1,0 +1,45 @@
+/**
+ * Handoff Service
+ *
+ * Builds a complete, structured handoff state from persisted Conductor
+ * state (never from raw transcripts), so a new agent — or the same agent
+ * after a restart — can continue without redoing or forgetting anything.
+ */
+import type { IExecutionRepository } from '../storage/execution-repository.js';
+import type { IEventRepository } from '../storage/event-repository.js';
+import type { IDecisionRepository } from '../storage/decision-repository.js';
+import type { IHandoffRepository } from '../storage/handoff-repository.js';
+import type { StructuredHandoffState } from '../types/handoff.js';
+export interface HandoffServiceDeps {
+    executionRepo: IExecutionRepository;
+    eventRepo: IEventRepository;
+    decisionRepo: IDecisionRepository;
+    handoffRepo: IHandoffRepository;
+}
+export interface CreateHandoffOptions {
+    fromAgentId: string;
+    toAgentId?: string;
+    /** Record the handoff as an execution event + HANDOFF_PENDING transition. */
+    markExecution?: boolean;
+}
+export declare class HandoffService {
+    private readonly deps;
+    constructor(deps: HandoffServiceDeps);
+    /** Assemble the structured handoff state and persist it. */
+    createHandoff(executionId: string, opts: CreateHandoffOptions): StructuredHandoffState;
+    /** Load a persisted handoff for a new agent to adopt. */
+    loadHandoff(handoffId: string): StructuredHandoffState;
+    /**
+     * Adopt a handoff: returns a ready-to-use prompt brief and (optionally)
+     * marks the execution RUNNING again under the new agent.
+     */
+    adoptHandoff(handoffId: string, toAgentId: string, opts?: {
+        resumeExecution?: boolean;
+    }): {
+        handoff: StructuredHandoffState;
+        brief: string;
+    };
+}
+/** Markdown brief consumed by the incoming agent (replaces its transcript need). */
+export declare function renderHandoffBrief(h: StructuredHandoffState): string;
+//# sourceMappingURL=handoff-service.d.ts.map

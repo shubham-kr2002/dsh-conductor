@@ -1,0 +1,72 @@
+/**
+ * Delegation service
+ *
+ * The single place that answers "may this action proceed without the
+ * human, on the human's own standing authority?" and offers (never
+ * creates) delegations from decision-memory recurrence. Explicit current
+ * human denial always outranks historical delegation.
+ */
+import type { Delegation, DelegationIsCovered, DelegationOrigin } from '../types/delegation.js';
+import type { PolicyCategory } from '../types/policy.js';
+import type { IDelegationRepository } from '../storage/delegation-repository.js';
+import type { IDecisionRepository } from '../storage/decision-repository.js';
+import type { ConductorDecision } from '../types/decision.js';
+export interface GrantDelegationInput {
+    scope: Delegation['scope'];
+    executionId?: string;
+    category: PolicyCategory | 'any';
+    resourcePattern?: string;
+    grantedBy: string;
+    origin?: DelegationOrigin;
+    /** Milliseconds from now; omit for no expiry. */
+    ttlMs?: number;
+    note?: string;
+}
+export interface CoverResult {
+    delegation: Delegation;
+    reason: string;
+}
+export interface DelegationServiceDeps {
+    delegationRepo: IDelegationRepository;
+    decisionRepo: IDecisionRepository;
+}
+export declare class DelegationError extends Error {
+}
+export declare class DelegationService {
+    private readonly deps;
+    constructor(deps: DelegationServiceDeps);
+    /** Grant a delegation. Explicit, scoped, audited; never from an agent. */
+    grant(input: GrantDelegationInput, now?: number): Delegation;
+    revoke(id: string, by: string, now?: number): Delegation;
+    list(opts?: {
+        active?: boolean;
+        now?: number;
+    }): Delegation[];
+    /**
+     * Is `action` covered by a standing delegation right now?
+     * Denial-shadow rule: if the most recent human verdict on the SAME
+     * subject (in the same execution) was a rejection that came after the
+     * delegation was granted, the delegation does NOT apply — explicit
+     * human authority beats historical entrustment.
+     */
+    covers(input: DelegationIsCovered): CoverResult | null;
+    private denialShadows;
+    /**
+     * Decision memory: recurring accepted categories, surfaced as offers.
+     * This NEVER grants anything — the human decides (Part 14).
+     */
+    suggestions(opts: {
+        decisions: ConductorDecision[];
+        /** Map a policy rule id to its category (from PolicyEngine.getRules). */
+        ruleCategory: (ruleId: string) => PolicyCategory | undefined;
+        minCount?: number;
+        now?: number;
+    }): Array<{
+        category: PolicyCategory;
+        accepted: number;
+        rejected: number;
+        sampleTitles: string[];
+        offer: string;
+    }>;
+}
+//# sourceMappingURL=delegation-service.d.ts.map

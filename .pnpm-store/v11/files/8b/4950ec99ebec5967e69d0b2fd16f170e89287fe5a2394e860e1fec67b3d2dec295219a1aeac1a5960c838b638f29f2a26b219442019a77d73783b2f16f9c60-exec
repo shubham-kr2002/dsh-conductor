@@ -1,0 +1,47 @@
+/**
+ * Conductor control surface — HTTP + event stream
+ *
+ * A deliberately small server (node:http only, zero new dependencies) that
+ * exposes the SAME control plane the CLI uses: one SQLite file, the same
+ * repositories, DecisionQueue, TakeoverService and derivations. No state
+ * lives in the browser; the page is a window onto the database.
+ *
+ * The Phase-10 surface is an ATTENTION COCKPIT: /api/attention runs the
+ * durable rows through buildAttentionModel (on demand, never hot-path) and
+ * serves ordered, sectioned items with their priority facts; the delegation
+ * endpoints expose exactly the authority the developer chose to entrust.
+ *
+ * Live updates: cheapest propagation that works across processes — a poll
+ * of a one-row fingerprint query every ~900ms pushed over Server-Sent
+ * Events, plus an in-process nudge via manager.subscribe. No Redis, no
+ * WebSocket layer.
+ */
+import { type ConductorRuntime } from '../cli/commands.js';
+export interface ConductorUiOptions {
+    /** SQLite file shared with the mounted plugin and the CLI. */
+    dbPath: string;
+    /** Port for the UI server (0 = ephemeral, used by tests). */
+    port?: number;
+    host?: string;
+    /** Static asset directory; defaults to the ./public shipped beside this module. */
+    publicDir?: string;
+    /** Cross-process change-detection interval. */
+    pollMs?: number;
+    runtime?: ConductorRuntime;
+    now?: () => number;
+    /**
+     * Derive the P10 attention model per /api/state call (drives the cockpit's
+     * map counts + load chip). Default true. Control-surface tests written
+     * against the P9 shape pass `attention: false` to keep state() free of
+     * model semantics (a critical item, not a held run, is what answers
+     * needsYou there). /api/attention always remains available.
+     */
+    attention?: boolean;
+}
+export interface ConductorUiServer {
+    url: string;
+    port: number;
+    close(): Promise<void>;
+}
+export declare function startConductorUi(options: ConductorUiOptions): Promise<ConductorUiServer>;
+//# sourceMappingURL=server.d.ts.map

@@ -1,0 +1,8 @@
+# dsh bundle patch — installed via `dsh plugin --profile <p> add <dsh-conductor>`.
+# Inserts the Conductor control plane into the profile's Cordis composition.
+# The bare name resolves through the profile's node_modules to the package
+# entrypoint (dist/src/dsh/bundle-entry.js). Config values are optional;
+# see README (DSH installation) for dbPath / workspaceRoot resolution.
+- insert:
+    - id: dsh-conductor
+      name: dsh-conductor

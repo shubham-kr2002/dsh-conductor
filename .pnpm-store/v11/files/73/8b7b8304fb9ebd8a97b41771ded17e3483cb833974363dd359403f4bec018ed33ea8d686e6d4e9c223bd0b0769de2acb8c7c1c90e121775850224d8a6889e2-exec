@@ -1,0 +1,7 @@
+/**
+ * Conductor Decision Types
+ *
+ * Persistent representation of human decisions requiring developer judgment.
+ */
+export {};
+//# sourceMappingURL=decision.js.map

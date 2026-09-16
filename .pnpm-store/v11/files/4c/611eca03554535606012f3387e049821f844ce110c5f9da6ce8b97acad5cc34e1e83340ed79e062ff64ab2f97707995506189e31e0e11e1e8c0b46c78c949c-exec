@@ -1,0 +1,28 @@
+/**
+ * Conductor Policy Engine
+ *
+ * Independent, extensible policy evaluator for filesystem, shell,
+ * dependencies, git, deployment, credentials, and production resources.
+ */
+import type { PolicyCategory, PolicyRule, PolicyEvaluationResult } from '../types/policy.js';
+export declare const DEFAULT_POLICY_RULES: PolicyRule[];
+export declare class PolicyEngine {
+    private readonly _rules;
+    constructor(initialRules?: PolicyRule[]);
+    addRule(rule: PolicyRule): void;
+    removeRule(ruleId: string): boolean;
+    getRules(category?: PolicyCategory): PolicyRule[];
+    /**
+     * Evaluate a shell command against active policies
+     */
+    evaluateShellCommand(command: string): PolicyEvaluationResult;
+    /**
+     * Evaluate a file path access
+     */
+    evaluateFilePath(filePath: string, operation: 'read' | 'write' | 'delete'): PolicyEvaluationResult;
+    /**
+     * Evaluate any tool execution against policy
+     */
+    evaluateToolExecution(toolName: string, args: Record<string, unknown>): PolicyEvaluationResult;
+}
+//# sourceMappingURL=policy-engine.d.ts.map

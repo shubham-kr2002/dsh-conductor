@@ -1,0 +1,28 @@
+/**
+ * Execution State Machine
+ *
+ * Enforces valid state transitions and lifecycle rules for Conductor executions.
+ */
+import type { ExecutionStatus, StateTransitionRecord } from '../types/execution.js';
+export declare const TERMINAL_STATES: ReadonlySet<ExecutionStatus>;
+export declare const ACTIVE_STATES: ReadonlySet<ExecutionStatus>;
+export declare const VALID_TRANSITIONS: Readonly<Record<ExecutionStatus, ReadonlySet<ExecutionStatus>>>;
+export declare class ExecutionStateMachine {
+    private _status;
+    private readonly _transitions;
+    constructor(initialStatus?: ExecutionStatus, initialTransitions?: StateTransitionRecord[]);
+    get currentStatus(): ExecutionStatus;
+    get transitions(): ReadonlyArray<StateTransitionRecord>;
+    isTerminal(): boolean;
+    isActive(): boolean;
+    canTransitionTo(target: ExecutionStatus): boolean;
+    getValidNextStates(): ExecutionStatus[];
+    transition(to: ExecutionStatus, options?: {
+        executionId?: string;
+        reason?: string;
+        actor?: 'agent' | 'human' | 'system' | 'policy' | 'attention';
+        timestamp?: number;
+        metadata?: Record<string, unknown>;
+    }): StateTransitionRecord;
+}
+//# sourceMappingURL=state-machine.d.ts.map

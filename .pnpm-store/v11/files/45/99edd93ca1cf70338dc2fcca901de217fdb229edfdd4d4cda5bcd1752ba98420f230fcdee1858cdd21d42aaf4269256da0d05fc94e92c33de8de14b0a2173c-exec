@@ -1,0 +1,6 @@
+#!/usr/bin/env node
+/**
+ * Conductor CLI entry point
+ */
+export {};
+//# sourceMappingURL=bin.d.ts.map

@@ -1,0 +1,61 @@
+/**
+ * Takeover Repository
+ *
+ * Persistence for take-over episodes: the frozen workspace snapshot, the
+ * continuation context generated at freeze time, and (on return) the human
+ * modifications detected at continue time.
+ */
+function rowToRecord(row) {
+    return {
+        id: row.id,
+        executionId: row.execution_id,
+        actor: row.actor,
+        status: row.status === 'returned' ? 'returned' : 'active',
+        snapshot: JSON.parse(row.snapshot_json),
+        continuation: JSON.parse(row.continuation_json),
+        humanModifications: row.human_modifications_json != null
+            ? JSON.parse(row.human_modifications_json)
+            : undefined,
+        notes: row.notes ?? undefined,
+        startedAt: Number(row.started_at),
+        returnedAt: row.returned_at != null ? Number(row.returned_at) : undefined,
+    };
+}
+export class SqliteTakeoverRepository {
+    db;
+    constructor(db) {
+        this.db = db;
+    }
+    save(record) {
+        this.db.raw
+            .prepare(`INSERT INTO takeovers (
+           id, execution_id, actor, status, snapshot_json, continuation_json,
+           human_modifications_json, notes, started_at, returned_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           status = excluded.status,
+           snapshot_json = excluded.snapshot_json,
+           continuation_json = excluded.continuation_json,
+           human_modifications_json = excluded.human_modifications_json,
+           notes = excluded.notes,
+           returned_at = excluded.returned_at`)
+            .run(record.id, record.executionId, record.actor, record.status, JSON.stringify(record.snapshot), JSON.stringify(record.continuation), record.humanModifications ? JSON.stringify(record.humanModifications) : null, record.notes ?? null, record.startedAt, record.returnedAt ?? null);
+    }
+    findById(id) {
+        const stmt = this.db.raw.prepare('SELECT * FROM takeovers WHERE id = ?');
+        const row = stmt.get(id);
+        return row ? rowToRecord(row) : null;
+    }
+    findActive(executionId) {
+        const stmt = this.db.raw.prepare(`SELECT * FROM takeovers WHERE execution_id = ? AND status = 'active'
+       ORDER BY started_at DESC LIMIT 1`);
+        const row = stmt.get(executionId);
+        return row ? rowToRecord(row) : null;
+    }
+    listByExecution(executionId) {
+        const stmt = this.db.raw.prepare('SELECT * FROM takeovers WHERE execution_id = ? ORDER BY started_at DESC');
+        const rows = stmt.all(executionId);
+        return rows.map((r) => rowToRecord(r));
+    }
+}
+//# sourceMappingURL=takeover-repository.js.map

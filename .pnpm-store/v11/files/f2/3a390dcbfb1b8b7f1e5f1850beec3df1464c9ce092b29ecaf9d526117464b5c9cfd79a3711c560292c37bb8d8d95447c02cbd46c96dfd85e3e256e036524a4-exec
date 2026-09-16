@@ -1,0 +1,117 @@
+/**
+ * SQLite Execution Repository
+ */
+import { Execution } from '../domain/execution.js';
+export class SqliteExecutionRepository {
+    db;
+    constructor(db) {
+        this.db = db;
+    }
+    save(execution) {
+        const state = execution.toState();
+        const stateJson = JSON.stringify(state);
+        const stmt = this.db.raw.prepare(`
+      INSERT INTO executions (id, goal, status, state_json, created_at, updated_at, completed_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        goal = excluded.goal,
+        status = excluded.status,
+        state_json = excluded.state_json,
+        updated_at = excluded.updated_at,
+        completed_at = excluded.completed_at
+    `);
+        stmt.run(state.executionId, state.goal, state.status, stateJson, state.timestamps.createdAt, state.timestamps.updatedAt, state.timestamps.completedAt ?? null);
+    }
+    findById(id) {
+        const stmt = this.db.raw.prepare(`
+      SELECT id, goal, status, state_json, created_at, updated_at, completed_at
+      FROM executions
+      WHERE id = ?
+    `);
+        const row = stmt.get(id);
+        if (!row) {
+            return null;
+        }
+        try {
+            const state = JSON.parse(row.state_json);
+            return new Execution(state);
+        }
+        catch {
+            return null;
+        }
+    }
+    /**
+     * Adoption lookup: the newest open execution for a workspace. A DSH run
+     * that was blocked by a paused run must be able to RESUME the same
+     * execution (its approval tokens live there) when relaunched.
+     */
+    findActiveByWorkspace(workspaceRoot) {
+        const stmt = this.db.raw.prepare(`
+      SELECT id, goal, status, state_json, created_at, updated_at, completed_at
+      FROM executions
+      WHERE status IN ('STARTING', 'RUNNING', 'WAITING', 'PAUSED', 'BLOCKED')
+      ORDER BY updated_at DESC
+    `);
+        for (const row of stmt.all()) {
+            try {
+                const state = JSON.parse(row.state_json);
+                if (state.workspace?.root === workspaceRoot)
+                    return new Execution(state);
+            }
+            catch {
+                /* skip unreadable state */
+            }
+        }
+        return null;
+    }
+    list(filter = {}) {
+        let sql = `
+      SELECT id, goal, status, state_json, created_at, updated_at, completed_at
+      FROM executions
+    `;
+        const params = [];
+        if (filter.status) {
+            sql += ' WHERE status = ?';
+            params.push(filter.status);
+        }
+        sql += ' ORDER BY updated_at DESC';
+        if (filter.limit !== undefined) {
+            sql += ' LIMIT ?';
+            params.push(filter.limit);
+            if (filter.offset !== undefined) {
+                sql += ' OFFSET ?';
+                params.push(filter.offset);
+            }
+        }
+        const stmt = this.db.raw.prepare(sql);
+        const rows = stmt.all(...params);
+        const results = [];
+        for (const row of rows) {
+            try {
+                const state = JSON.parse(row.state_json);
+                results.push(new Execution(state));
+            }
+            catch {
+                // Skip corrupted row
+            }
+        }
+        return results;
+    }
+    delete(id) {
+        const stmt = this.db.raw.prepare('DELETE FROM executions WHERE id = ?');
+        const res = stmt.run(id);
+        return res.changes > 0;
+    }
+    count(status) {
+        let sql = 'SELECT COUNT(*) as count FROM executions';
+        const params = [];
+        if (status) {
+            sql += ' WHERE status = ?';
+            params.push(status);
+        }
+        const stmt = this.db.raw.prepare(sql);
+        const row = stmt.get(...params);
+        return row?.count ?? 0;
+    }
+}
+//# sourceMappingURL=execution-repository.js.map

@@ -1,0 +1,81 @@
+/**
+ * Conductor Domain Errors
+ */
+export class ConductorError extends Error {
+    code;
+    constructor(message, code = 'CONDUCTOR_ERROR') {
+        super(message);
+        this.code = code;
+        this.name = 'ConductorError';
+    }
+}
+export class InvalidStateTransitionError extends ConductorError {
+    from;
+    to;
+    executionId;
+    constructor(from, to, executionId, message) {
+        const defaultMsg = `Invalid state transition from "${from}" to "${to}"${executionId ? ` for execution "${executionId}"` : ''}.`;
+        super(message || defaultMsg, 'INVALID_STATE_TRANSITION');
+        this.from = from;
+        this.to = to;
+        this.executionId = executionId;
+        this.name = 'InvalidStateTransitionError';
+    }
+}
+export class ExecutionNotFoundError extends ConductorError {
+    executionId;
+    constructor(executionId) {
+        super(`Execution "${executionId}" not found.`, 'EXECUTION_NOT_FOUND');
+        this.executionId = executionId;
+        this.name = 'ExecutionNotFoundError';
+    }
+}
+export class DecisionNotFoundError extends ConductorError {
+    decisionId;
+    constructor(decisionId) {
+        super(`Decision "${decisionId}" not found.`, 'DECISION_NOT_FOUND');
+        this.decisionId = decisionId;
+        this.name = 'DecisionNotFoundError';
+    }
+}
+export class ExecutionAlreadyActiveError extends ConductorError {
+    executionId;
+    currentStatus;
+    constructor(executionId, currentStatus) {
+        super(`Execution "${executionId}" is already active in state "${currentStatus}".`, 'EXECUTION_ALREADY_ACTIVE');
+        this.executionId = executionId;
+        this.currentStatus = currentStatus;
+        this.name = 'ExecutionAlreadyActiveError';
+    }
+}
+export class ExecutionTerminatedError extends ConductorError {
+    executionId;
+    terminalStatus;
+    constructor(executionId, terminalStatus) {
+        super(`Execution "${executionId}" is already terminated in state "${terminalStatus}". No further operations allowed.`, 'EXECUTION_TERMINATED');
+        this.executionId = executionId;
+        this.terminalStatus = terminalStatus;
+        this.name = 'ExecutionTerminatedError';
+    }
+}
+export class PolicyViolationError extends ConductorError {
+    category;
+    reason;
+    ruleId;
+    constructor(category, reason, ruleId) {
+        super(`Policy violation in "${category}": ${reason}`, 'POLICY_VIOLATION');
+        this.category = category;
+        this.reason = reason;
+        this.ruleId = ruleId;
+        this.name = 'PolicyViolationError';
+    }
+}
+export class TakeoverError extends ConductorError {
+    executionId;
+    constructor(executionId, message) {
+        super(`Takeover error for "${executionId}": ${message}`, 'TAKEOVER_ERROR');
+        this.executionId = executionId;
+        this.name = 'TakeoverError';
+    }
+}
+//# sourceMappingURL=errors.js.map

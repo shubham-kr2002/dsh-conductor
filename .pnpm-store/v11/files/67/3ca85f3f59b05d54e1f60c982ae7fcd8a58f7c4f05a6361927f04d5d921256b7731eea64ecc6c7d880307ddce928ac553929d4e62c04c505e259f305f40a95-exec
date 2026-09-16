@@ -1,0 +1,385 @@
+/**
+ * Execution Entity
+ *
+ * Core aggregate representing an autonomous agent execution managed by Conductor.
+ */
+import { randomUUID } from 'node:crypto';
+import { ExecutionStateMachine } from './state-machine.js';
+import { ExecutionTerminatedError } from './errors.js';
+export class Execution {
+    id;
+    goal;
+    constraints;
+    _stateMachine;
+    workspace;
+    agent;
+    currentPhase;
+    progressSummary;
+    completedWork;
+    nextAction;
+    decisions;
+    interventions;
+    risks;
+    metrics;
+    timestamps;
+    constructor(state) {
+        this.id = state.executionId;
+        this.goal = state.goal;
+        this.constraints = [...state.constraints];
+        this._stateMachine = new ExecutionStateMachine(state.status, state.transitions);
+        this.workspace = {
+            root: state.workspace.root,
+            initialCommit: state.workspace.initialCommit,
+            currentCommit: state.workspace.currentCommit,
+            branch: state.workspace.branch,
+            filesModified: [...state.workspace.filesModified],
+            filesCreated: [...state.workspace.filesCreated],
+            filesDeleted: [...state.workspace.filesDeleted],
+        };
+        this.agent = { ...state.agent };
+        this.currentPhase = state.currentPhase;
+        this.progressSummary = state.progressSummary;
+        this.completedWork = [...state.completedWork];
+        this.nextAction = state.nextAction;
+        this.decisions = [...state.decisions];
+        this.interventions = [...state.interventions];
+        this.risks = [...state.risks];
+        this.metrics = { ...state.metrics };
+        this.timestamps = { ...state.timestamps };
+    }
+    static create(options) {
+        const now = Date.now();
+        const id = options.id ?? `exec-${randomUUID()}`;
+        const initialState = {
+            executionId: id,
+            goal: options.goal,
+            constraints: options.constraints ? [...options.constraints] : [],
+            status: 'STARTING',
+            workspace: {
+                root: options.workspaceRoot,
+                filesModified: [],
+                filesCreated: [],
+                filesDeleted: [],
+            },
+            agent: {
+                id: options.agent?.id ?? 'default-agent',
+                provider: options.agent?.provider,
+                model: options.agent?.model,
+                preset: options.agent?.preset,
+                delegationDepth: options.agent?.delegationDepth ?? 0,
+            },
+            currentPhase: options.initialPhase ?? 'initialization',
+            progressSummary: 'Execution initialized',
+            completedWork: [],
+            nextAction: 'Start autonomous execution',
+            decisions: [],
+            interventions: [],
+            risks: [],
+            metrics: {
+                durationMs: 0,
+                toolCallCount: 0,
+                decisionCount: 0,
+                interventionCount: 0,
+                commandsExecuted: 0,
+                filesChangedCount: 0,
+                testsRunCount: 0,
+                testsFailedCount: 0,
+            },
+            timestamps: {
+                createdAt: now,
+                updatedAt: now,
+            },
+            transitions: [],
+        };
+        return new Execution(initialState);
+    }
+    get status() {
+        return this._stateMachine.currentStatus;
+    }
+    /** Point this execution at the agent now responsible for it (handoff). */
+    reassignAgent(agentId) {
+        this.agent.id = agentId;
+        this.recordTouch();
+    }
+    get transitions() {
+        return this._stateMachine.transitions;
+    }
+    isTerminal() {
+        return this._stateMachine.isTerminal();
+    }
+    isActive() {
+        return this._stateMachine.isActive();
+    }
+    assertNotTerminated(actionName) {
+        if (this.isTerminal()) {
+            throw new ExecutionTerminatedError(this.id, this.status);
+        }
+    }
+    recordTouch() {
+        const now = Date.now();
+        this.timestamps.updatedAt = now;
+        if (this.timestamps.startedAt && !this.isTerminal()) {
+            this.metrics.durationMs = now - this.timestamps.startedAt;
+        }
+    }
+    start(actor = 'system') {
+        const now = Date.now();
+        if (!this.timestamps.startedAt) {
+            this.timestamps.startedAt = now;
+        }
+        const transition = this._stateMachine.transition('RUNNING', {
+            executionId: this.id,
+            actor,
+            reason: 'Execution started',
+            timestamp: now,
+        });
+        this.recordTouch();
+        return transition;
+    }
+    pause(reason, actor = 'system') {
+        this.assertNotTerminated('pause');
+        const transition = this._stateMachine.transition('PAUSED', {
+            executionId: this.id,
+            actor,
+            reason: reason ?? 'Execution paused',
+        });
+        this.recordTouch();
+        return transition;
+    }
+    resume(reason, actor = 'human') {
+        this.assertNotTerminated('resume');
+        const transition = this._stateMachine.transition('RUNNING', {
+            executionId: this.id,
+            actor,
+            reason: reason ?? 'Execution resumed',
+        });
+        this.recordTouch();
+        return transition;
+    }
+    wait(reason) {
+        this.assertNotTerminated('wait');
+        const transition = this._stateMachine.transition('WAITING', {
+            executionId: this.id,
+            actor: 'system',
+            reason: reason ?? 'Waiting for external input or event',
+        });
+        this.recordTouch();
+        return transition;
+    }
+    block(reason) {
+        this.assertNotTerminated('block');
+        const transition = this._stateMachine.transition('BLOCKED', {
+            executionId: this.id,
+            actor: 'agent',
+            reason,
+        });
+        this.recordTouch();
+        return transition;
+    }
+    takeOver(actor = 'developer', notes) {
+        this.assertNotTerminated('take over');
+        const now = Date.now();
+        const transition = this._stateMachine.transition('TAKEN_OVER', {
+            executionId: this.id,
+            actor: 'human',
+            reason: 'Human developer took over control',
+            timestamp: now,
+        });
+        const intervention = {
+            id: `int-${randomUUID()}`,
+            timestamp: now,
+            type: 'take_over',
+            summary: 'Human developer assumed direct execution control',
+            actor,
+            notes,
+        };
+        this.interventions.push(intervention);
+        this.metrics.interventionCount += 1;
+        this.recordTouch();
+        return transition;
+    }
+    continueFromTakeOver(actor = 'developer', notes, filesChanged) {
+        this.assertNotTerminated('continue from take over');
+        const now = Date.now();
+        const transition = this._stateMachine.transition('RUNNING', {
+            executionId: this.id,
+            actor: 'human',
+            reason: 'Human developer returned control to agent',
+            timestamp: now,
+        });
+        const intervention = {
+            id: `int-${randomUUID()}`,
+            timestamp: now,
+            type: 'continue',
+            summary: 'Execution returned to agent with updated workspace',
+            actor,
+            notes,
+            filesChanged,
+        };
+        this.interventions.push(intervention);
+        this.metrics.interventionCount += 1;
+        if (filesChanged && filesChanged.length > 0) {
+            for (const file of filesChanged) {
+                if (!this.workspace.filesModified.includes(file)) {
+                    this.workspace.filesModified.push(file);
+                }
+            }
+            this.metrics.filesChangedCount = this.workspace.filesModified.length;
+        }
+        this.recordTouch();
+        return transition;
+    }
+    requestHandoff(reason, toAgentId) {
+        this.assertNotTerminated('request handoff');
+        const transition = this._stateMachine.transition('HANDOFF_PENDING', {
+            executionId: this.id,
+            actor: 'agent',
+            reason,
+            metadata: toAgentId ? { toAgentId } : undefined,
+        });
+        this.recordTouch();
+        return transition;
+    }
+    complete(summary) {
+        this.assertNotTerminated('complete');
+        const now = Date.now();
+        this.timestamps.completedAt = now;
+        if (this.timestamps.startedAt) {
+            this.metrics.durationMs = now - this.timestamps.startedAt;
+        }
+        if (summary) {
+            this.progressSummary = summary;
+        }
+        const transition = this._stateMachine.transition('COMPLETED', {
+            executionId: this.id,
+            actor: 'agent',
+            reason: summary ?? 'Task completed successfully',
+            timestamp: now,
+        });
+        this.recordTouch();
+        return transition;
+    }
+    fail(error) {
+        this.assertNotTerminated('fail');
+        const now = Date.now();
+        this.timestamps.completedAt = now;
+        if (this.timestamps.startedAt) {
+            this.metrics.durationMs = now - this.timestamps.startedAt;
+        }
+        const transition = this._stateMachine.transition('FAILED', {
+            executionId: this.id,
+            actor: 'system',
+            reason: error,
+            timestamp: now,
+        });
+        this.recordTouch();
+        return transition;
+    }
+    cancel(reason = 'Execution cancelled', actor = 'human') {
+        this.assertNotTerminated('cancel');
+        const now = Date.now();
+        this.timestamps.completedAt = now;
+        if (this.timestamps.startedAt) {
+            this.metrics.durationMs = now - this.timestamps.startedAt;
+        }
+        const transition = this._stateMachine.transition('CANCELLED', {
+            executionId: this.id,
+            actor,
+            reason,
+            timestamp: now,
+        });
+        this.recordTouch();
+        return transition;
+    }
+    recordFileChange(filePath, action) {
+        if (action === 'created' && !this.workspace.filesCreated.includes(filePath)) {
+            this.workspace.filesCreated.push(filePath);
+        }
+        else if (action === 'deleted' && !this.workspace.filesDeleted.includes(filePath)) {
+            this.workspace.filesDeleted.push(filePath);
+        }
+        else if (!this.workspace.filesModified.includes(filePath)) {
+            this.workspace.filesModified.push(filePath);
+        }
+        this.metrics.filesChangedCount =
+            this.workspace.filesModified.length +
+                this.workspace.filesCreated.length +
+                this.workspace.filesDeleted.length;
+        this.recordTouch();
+    }
+    recordToolCall() {
+        this.metrics.toolCallCount += 1;
+        this.recordTouch();
+    }
+    recordCommand(exitCode) {
+        this.metrics.commandsExecuted += 1;
+        this.recordTouch();
+    }
+    recordTestRun(passed) {
+        this.metrics.testsRunCount += 1;
+        if (!passed) {
+            this.metrics.testsFailedCount += 1;
+        }
+        this.recordTouch();
+    }
+    addDecision(decisionId) {
+        if (!this.decisions.includes(decisionId)) {
+            this.decisions.push(decisionId);
+            this.metrics.decisionCount = this.decisions.length;
+            this.recordTouch();
+        }
+    }
+    addCompletedWork(work) {
+        if (!this.completedWork.includes(work)) {
+            this.completedWork.push(work);
+            this.recordTouch();
+        }
+    }
+    addRisk(risk) {
+        if (!this.risks.includes(risk)) {
+            this.risks.push(risk);
+            this.recordTouch();
+        }
+    }
+    setPhase(phase) {
+        this.currentPhase = phase;
+        this.recordTouch();
+    }
+    setProgressSummary(summary) {
+        this.progressSummary = summary;
+        this.recordTouch();
+    }
+    setNextAction(action) {
+        this.nextAction = action;
+        this.recordTouch();
+    }
+    toState() {
+        return {
+            executionId: this.id,
+            goal: this.goal,
+            constraints: [...this.constraints],
+            status: this.status,
+            workspace: {
+                root: this.workspace.root,
+                initialCommit: this.workspace.initialCommit,
+                currentCommit: this.workspace.currentCommit,
+                branch: this.workspace.branch,
+                filesModified: [...this.workspace.filesModified],
+                filesCreated: [...this.workspace.filesCreated],
+                filesDeleted: [...this.workspace.filesDeleted],
+            },
+            agent: { ...this.agent },
+            currentPhase: this.currentPhase,
+            progressSummary: this.progressSummary,
+            completedWork: [...this.completedWork],
+            nextAction: this.nextAction,
+            decisions: [...this.decisions],
+            interventions: [...this.interventions],
+            risks: [...this.risks],
+            metrics: { ...this.metrics },
+            timestamps: { ...this.timestamps },
+            transitions: [...this.transitions],
+        };
+    }
+}
+//# sourceMappingURL=execution.js.map

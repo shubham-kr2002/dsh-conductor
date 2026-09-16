@@ -1,0 +1,40 @@
+/**
+ * Workspace Snapshot
+ *
+ * Captures observable workspace state at takeover-freeze and at continue
+ * time, and computes the human modifications made in between. Git-based
+ * when available; falls back to a bounded filesystem scan otherwise.
+ */
+export interface WorkspaceFileState {
+    path: string;
+    size: number;
+    mtimeMs: number;
+}
+export interface WorkspaceSnapshot {
+    root: string;
+    takenAt: number;
+    isGitRepo: boolean;
+    branch?: string;
+    headCommit?: string;
+    /** `git status --porcelain` entries at capture time (may be empty). */
+    gitStatus: string[];
+    files: WorkspaceFileState[];
+}
+export interface WorkspaceDiff {
+    created: string[];
+    modified: string[];
+    deleted: string[];
+    gitStatusAdded: string[];
+}
+/** Injectable so tests can run without git. */
+export type GitRunner = (args: string[], cwd: string) => {
+    ok: boolean;
+    stdout: string;
+};
+export declare const spawnGit: GitRunner;
+export declare function scanWorkspaceFiles(root: string, maxFiles?: number): WorkspaceFileState[];
+export declare function captureWorkspaceSnapshot(root: string, git?: GitRunner): WorkspaceSnapshot;
+/** Compute what the human changed between two snapshots. */
+export declare function diffSnapshots(before: WorkspaceSnapshot, after: WorkspaceSnapshot): WorkspaceDiff;
+export declare function allChangedPaths(diff: WorkspaceDiff): string[];
+//# sourceMappingURL=workspace-snapshot.d.ts.map

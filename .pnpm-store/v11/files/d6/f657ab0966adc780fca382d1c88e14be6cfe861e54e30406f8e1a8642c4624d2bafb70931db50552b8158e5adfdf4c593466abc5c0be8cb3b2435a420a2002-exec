@@ -1,0 +1,37 @@
+/**
+ * Takeover Repository
+ *
+ * Persistence for take-over episodes: the frozen workspace snapshot, the
+ * continuation context generated at freeze time, and (on return) the human
+ * modifications detected at continue time.
+ */
+import type { ConductorDatabase } from './database.js';
+import type { WorkspaceSnapshot, WorkspaceDiff } from '../takeover/workspace-snapshot.js';
+import type { ContinuationContext } from '../takeover/continuation-context.js';
+export interface TakeoverRecord {
+    id: string;
+    executionId: string;
+    actor: string;
+    status: 'active' | 'returned';
+    snapshot: WorkspaceSnapshot;
+    continuation: ContinuationContext;
+    humanModifications?: WorkspaceDiff;
+    notes?: string;
+    startedAt: number;
+    returnedAt?: number;
+}
+export interface ITakeoverRepository {
+    save(record: TakeoverRecord): void;
+    findById(id: string): TakeoverRecord | null;
+    findActive(executionId: string): TakeoverRecord | null;
+    listByExecution(executionId: string): TakeoverRecord[];
+}
+export declare class SqliteTakeoverRepository implements ITakeoverRepository {
+    private readonly db;
+    constructor(db: ConductorDatabase);
+    save(record: TakeoverRecord): void;
+    findById(id: string): TakeoverRecord | null;
+    findActive(executionId: string): TakeoverRecord | null;
+    listByExecution(executionId: string): TakeoverRecord[];
+}
+//# sourceMappingURL=takeover-repository.d.ts.map

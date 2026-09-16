@@ -1,0 +1,30 @@
+/**
+ * SQLite Decision Repository
+ */
+import type { ConductorDatabase } from './database.js';
+import type { ConductorDecision, DecisionStatus } from '../types/decision.js';
+export interface DecisionFilter {
+    status?: DecisionStatus;
+    executionId?: string;
+}
+export interface IDecisionRepository {
+    save(decision: ConductorDecision): void;
+    findById(id: string): ConductorDecision | null;
+    list(filter?: DecisionFilter): ConductorDecision[];
+    delete(id: string): boolean;
+    /**
+     * Atomically mark an unspent decision as consumed. Returns true for the
+     * single caller whose UPDATE lands (cross-process exactly-once).
+     */
+    tryConsume(id: string, at: number): boolean;
+}
+export declare class SqliteDecisionRepository implements IDecisionRepository {
+    private readonly db;
+    constructor(db: ConductorDatabase);
+    save(decision: ConductorDecision): void;
+    findById(id: string): ConductorDecision | null;
+    list(filter?: DecisionFilter): ConductorDecision[];
+    delete(id: string): boolean;
+    tryConsume(id: string, at: number): boolean;
+}
+//# sourceMappingURL=decision-repository.d.ts.map

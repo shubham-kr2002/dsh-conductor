@@ -1,0 +1,51 @@
+/**
+ * Attention orchestrator
+ *
+ * The layer that turns "many things are happening" into "here is where
+ * your attention should go". Pure derivation over durable rows — no
+ * storage, no events emitted, no LLM. Called on demand by the UI, the
+ * CLI and the demo; never on the event hot path.
+ *
+ *   executions + decisions + recent events
+ *        → candidates (attention-candidate.ts)
+ *        → dedupe → cluster → sort (attention-priority.ts)
+ *        → budget (attention-suppression.ts)
+ *        → attention map + ordered items
+ */
+import type { Execution } from '../domain/execution.js';
+import type { ConductorDecision } from '../types/decision.js';
+import type { ConductorEvent } from '../types/event.js';
+import type { AttentionLoad } from '../types/attention.js';
+import type { AttentionCandidate } from './attention-candidate.js';
+import { type BudgetPolicy } from './attention-suppression.js';
+export interface AttentionModelInput {
+    executions: Execution[];
+    /** ALL decisions in scope (pending ones become candidates; the rest are history). */
+    decisions: ConductorDecision[];
+    /** Bounded recent events per execution (observations). */
+    events: ConductorEvent[];
+    now: number;
+    policy?: BudgetPolicy;
+}
+export interface AttentionMap {
+    agents: number;
+    needsYou: number;
+    waiting: number;
+    watching: number;
+    working: number;
+    finished: number;
+    load: AttentionLoad;
+}
+export interface AttentionModel {
+    generatedAt: number;
+    map: AttentionMap;
+    items: AttentionCandidate[];
+    /** ids the budget demoted this pass (observable suppression, never hidden). */
+    budgetDemoted: string[];
+}
+/**
+ * Build the fleet-wide attention model. Deterministic: identical durable
+ * rows + identical `now` produce an identical model.
+ */
+export declare function buildAttentionModel(input: AttentionModelInput): AttentionModel;
+//# sourceMappingURL=attention-orchestrator.d.ts.map

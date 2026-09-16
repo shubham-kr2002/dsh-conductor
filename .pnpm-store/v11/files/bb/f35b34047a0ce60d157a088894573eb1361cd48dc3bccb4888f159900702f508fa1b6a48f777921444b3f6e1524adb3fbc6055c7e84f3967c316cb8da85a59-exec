@@ -1,0 +1,169 @@
+/**
+ * Part 19 — "A Day In The Life" deterministic demo scenario.
+ *
+ * Drives the REAL control plane (ExecutionManager + DecisionQueue +
+ * PolicyEngine + AttentionEngine + EventAdapter + SQLite persistence)
+ * through a scripted 42-minute story, then prints the final
+ * return-to-work screen. Every number on that screen is derived from
+ * persisted rows via the public summary derivations
+ * (computeAttentionMetrics / rollupDecisionQuality / condenseTimeline /
+ * buildAwaySummary / statusLanguage) — nothing is hardcoded.
+ *
+ * The story itself runs in milliseconds of real wall-clock time, so the
+ * persisted timestamps are shifted AFTER the fact onto a fictional
+ * schedule via the pure `reschedule` helper (execution state keeps its
+ * transitions inside state_json, which repo.save re-serializes whole),
+ * `rescheduleDecision` (decision rows via decisionRepo.save), and events
+ * (pre-stamped at emit time with the same fictional clock).
+ *
+ * Beats (fictional clock shown for base = 09:12):
+ *   1. "Upgrade the application dependencies and migrate the payment
+ *      API" STARTED → RUNNING (agent 'atlas').
+ *   2. Autonomous work: read/search, edits to src/pricing.ts +
+ *      src/migrations/0042.sql, `pnpm test` FAILS → attention stays
+ *      BACKGROUND (self-heal, zero decisions), fix + re-run passes.
+ *   3. `pnpm add ioredis@5.4.1` → REQUIRE_APPROVAL decision with a
+ *      structured `why`; developer answers APPROVE ONCE (accepted).
+ *   4. Approval token: consumeApproval() true, then false (one-time).
+ *      The install completes.
+ *   5. `git push --force origin main` → CRITICAL decision (irreversible,
+ *      external blast radius). Developer does NOT answer — takes over,
+ *      edits the migration by hand, returns control. The decision stays
+ *      pending.
+ *   6. Agent continues, tests pass, execution.completed.
+ *   7. Return-to-work screen printed from public derivations only.
+ */
+import { type TimelineEntry } from '../summary/timeline.js';
+import type { ConductorDecision } from '../types/decision.js';
+import type { ExecutionState, ExecutionStatus } from '../types/execution.js';
+export declare const MINUTE = 60000;
+/** The fictional story schedule — offsets in MINUTES from story base. */
+export declare const DEMO_STORY: {
+    readonly goal: 'Upgrade the application dependencies and migrate the payment API';
+    readonly agentId: 'atlas';
+    readonly totalMin: 42;
+    readonly totalMs: number;
+    /**
+     * Fictional offset per lifecycle transition, in the exact order the
+     * story produces them: start, pause (install ask), resume (approved),
+     * pause (force-push), take-over, return control, complete.
+     * held = (16.5-15) + (25-24) = 2.5 min; human control = 26.5-25 = 1.5
+     * min → 4 min human attention out of 42 → ratio 9.5%.
+     */
+    readonly transitionOffsetsMin: readonly [0, 15, 16.5, 24, 25, 26.5, 42];
+    /** Event emission stamps for the scripted beats. */
+    readonly beats: {
+        readonly start: 0;
+        readonly steppedAway: 0.5;
+        readonly readManifest: 2;
+        readonly grepCheckout: 2.4;
+        readonly editPricing: 6;
+        readonly writeMigration: 6.5;
+        readonly testStart: 10;
+        readonly testFail: 10.8;
+        readonly fixPricing: 12;
+        readonly fixTest: 12.4;
+        readonly testRerunStart: 13;
+        readonly testPass: 13.8;
+        readonly installAsk: 15;
+        readonly installDone: 17;
+        readonly installPkgJson: 17.3;
+        readonly pushAsk: 24;
+        readonly takeOver: 25;
+        readonly manualEdit: 25.8;
+        readonly returnControl: 26.5;
+        readonly reviewPayment: 32;
+        readonly finalTestStart: 33;
+        readonly finalTestPass: 33.9;
+        readonly commit: 36;
+        readonly commitDone: 36.4;
+        readonly complete: 42;
+    };
+    /** Fictional clock slots for the two decisions produced by the story. */
+    readonly decisionSlots: {
+        readonly install: {
+            readonly createdMin: 15;
+            readonly presentedMin: 15.25;
+            readonly resolvedMin: 16.5;
+            readonly updatedMin: 17;
+            readonly consumedMin: 16.75;
+        };
+        readonly force: {
+            readonly createdMin: 24;
+            readonly presentedMin: 24.33;
+            readonly updatedMin: 24.33;
+        };
+    };
+};
+export interface DemoOptions {
+    /** SQLite file. Default `${workspaceRoot}/.conductor-demo/demo.db`. */
+    dbPath?: string;
+    /** Workspace the fictional execution operates in. Default cwd. */
+    workspaceRoot?: string;
+    /** Story "now" (end of the 42-minute day). Default Date.now(). */
+    now?: number;
+    /** Output sink. Defaults to console.log. Every line passes through. */
+    log?: (line: string) => void;
+}
+export interface DemoFacts {
+    /** Attention levels recorded for the failing `pnpm test` events. */
+    failureAttentionLevels: string[];
+    /** New decisions caused by the failed test run — must be 0. */
+    decisionDeltaOnFailure: number;
+    /** First consumeApproval of the install token — expected true. */
+    tokenFirst: boolean;
+    /** Second consumeApproval of the same token — expected false. */
+    tokenSecond: boolean;
+    installSubject: string;
+    forceSubject: string;
+    finalStatus: ExecutionStatus;
+    eventCount: number;
+}
+export interface DemoResult {
+    executionId: string;
+    goal: string;
+    dbPath: string;
+    /** Fictional story window, derived from opts.now. */
+    storyBaseAt: number;
+    storyEndAt: number;
+    totalMs: number;
+    autonomousMs: number;
+    humanMs: number;
+    attentionRatio: number;
+    decisions: number;
+    takeovers: number;
+    unsafeActions: number;
+    timeline: TimelineEntry[];
+    finalScreen: string[];
+    decisionIds: {
+        install: string;
+        force: string;
+    };
+    facts: DemoFacts;
+}
+/**
+ * Pure: rewrite an execution's persisted timeline onto the fictional
+ * schedule that starts at `base`. Transitions are mapped positionally
+ * (clamped to the last offset), createdAt/startedAt/updatedAt/completedAt
+ * follow, take-over interventions attach to their transitions, and
+ * metrics.durationMs is recomputed from the shifted bounds. Feeding an
+ * already-rescheduled state with a new base produces the same 42-minute
+ * story again (idempotent remapping, no relative drifting).
+ */
+export declare function reschedule(state: ExecutionState, base: number): ExecutionState;
+/** Fictional clock slot for one decision row. */
+export interface DecisionSlot {
+    createdMin: number;
+    presentedMin?: number;
+    resolvedMin?: number;
+    updatedMin: number;
+    consumedMin?: number;
+}
+/** Pure: rewrite a decision row's observable timestamps onto the story. */
+export declare function rescheduleDecision(d: ConductorDecision, base: number, slot?: DecisionSlot): ConductorDecision;
+/**
+ * Run the full scripted day against a real SQLite database and return the
+ * derived return-to-work result. See the module header for the beat list.
+ */
+export declare function runDemoScenario(opts?: DemoOptions): Promise<DemoResult>;
+//# sourceMappingURL=scenario.d.ts.map

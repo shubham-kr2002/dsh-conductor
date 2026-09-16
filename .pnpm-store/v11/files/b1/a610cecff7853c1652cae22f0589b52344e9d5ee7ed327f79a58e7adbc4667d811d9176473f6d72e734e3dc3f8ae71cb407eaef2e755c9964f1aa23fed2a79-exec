@@ -1,0 +1,24 @@
+/**
+ * SQLite Event Repository
+ */
+import type { ConductorDatabase } from './database.js';
+import type { ConductorEvent, ConductorEventType } from '../types/event.js';
+export interface EventFilter {
+    type?: ConductorEventType;
+    limit?: number;
+    offset?: number;
+}
+export interface IEventRepository {
+    save(event: ConductorEvent): void;
+    listByExecution(executionId: string, filter?: EventFilter): ConductorEvent[];
+    countByExecution(executionId: string): number;
+}
+export declare class SqliteEventRepository implements IEventRepository {
+    private readonly db;
+    constructor(db: ConductorDatabase);
+    save(event: ConductorEvent): void;
+    listByExecution(executionId: string, filter?: EventFilter): ConductorEvent[];
+    private query;
+    countByExecution(executionId: string): number;
+}
+//# sourceMappingURL=event-repository.d.ts.map

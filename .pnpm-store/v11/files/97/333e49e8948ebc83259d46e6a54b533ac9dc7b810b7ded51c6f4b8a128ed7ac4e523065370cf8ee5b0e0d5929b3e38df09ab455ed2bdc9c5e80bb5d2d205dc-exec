@@ -1,0 +1,26 @@
+/**
+ * SQLite Database Connection & Management
+ *
+ * Uses Node.js native `node:sqlite` (DatabaseSync).
+ */
+import { DatabaseSync } from 'node:sqlite';
+export interface DatabaseOptions {
+    path?: string;
+    enableWal?: boolean;
+}
+export declare class ConductorDatabase {
+    private _db;
+    readonly path: string;
+    constructor(options?: DatabaseOptions);
+    private init;
+    /**
+     * Idempotent column additions for databases created by earlier schema
+     * versions (CREATE TABLE IF NOT EXISTS never touches existing tables).
+     */
+    private migrate;
+    get raw(): DatabaseSync;
+    exec(sql: string): void;
+    close(): void;
+    isOpen(): boolean;
+}
+//# sourceMappingURL=database.d.ts.map

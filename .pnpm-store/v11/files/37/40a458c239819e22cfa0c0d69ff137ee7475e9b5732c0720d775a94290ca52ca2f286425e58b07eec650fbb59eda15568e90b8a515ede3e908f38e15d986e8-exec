@@ -1,0 +1,23 @@
+/**
+ * Status language
+ *
+ * The developer should never have to learn a state machine. Each internal
+ * ExecutionStatus gets exactly one primary human phrase answering "do I
+ * need to care right now?" — the technical name remains available as
+ * secondary detail (Part 13 of the product spec).
+ */
+import type { ExecutionStatus } from '../types/execution.js';
+export interface StatusLanguage {
+    /** Primary label shown in the UI. */
+    label: string;
+    /** One short line of meaning, for tooltips / detail views. */
+    meaning: string;
+    /** Visual tone: calm = no action, wait = human is busy elsewhere, alert = human needed, bad = broke, done = over. */
+    tone: 'calm' | 'wait' | 'alert' | 'bad' | 'done';
+    /** Does a human need to act for this run to move forward? */
+    needsYou: boolean;
+}
+export declare function statusLanguage(status: ExecutionStatus): StatusLanguage;
+/** Decision status as a human phrase. */
+export declare function decisionStatusLabel(status: string): string;
+//# sourceMappingURL=status-language.d.ts.map

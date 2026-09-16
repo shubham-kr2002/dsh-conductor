@@ -1,0 +1,61 @@
+/**
+ * Event Adapter
+ *
+ * Normalizes DSH runtime, tool, and session events into canonical ConductorEvent instances.
+ * Keeps all DSH-specific tool heuristics and event shapes decoupled from the Conductor core domain.
+ */
+import type { ConductorEvent, ConductorEventType, EventSource } from '../types/event.js';
+export interface RawToolExecution {
+    callId: string;
+    name: string;
+    arguments: unknown;
+    agentId?: string;
+    timestamp?: number;
+}
+export interface RawToolResult {
+    callId: string;
+    toolName: string;
+    isError: boolean;
+    value?: unknown;
+    content?: Array<{
+        type: string;
+        text?: string;
+    }>;
+    error?: {
+        name: string;
+        code: string;
+        message?: string;
+    };
+    timestamp?: number;
+}
+export interface RawSessionEvent {
+    type: string;
+    seq?: number;
+    time?: number;
+    data: Record<string, unknown>;
+}
+export declare class EventAdapter {
+    /**
+     * Determine if a bash command represents a test execution
+     */
+    static isTestCommand(command: string): boolean;
+    /**
+     * Create a ConductorEvent from raw input
+     */
+    static createEvent<T extends Record<string, unknown>>(executionId: string, type: ConductorEventType, payload: T, source?: EventSource, metadata?: Record<string, unknown>): ConductorEvent<T>;
+    /**
+     * Normalize a tool call into one or more ConductorEvents
+     */
+    static adaptToolCall(executionId: string, toolExec: RawToolExecution): ConductorEvent[];
+    /**
+     * Normalize a tool execution result into ConductorEvents
+     */
+    static adaptToolResult(executionId: string, result: RawToolResult, originalArgs?: Record<string, unknown>): ConductorEvent[];
+    /**
+     * Normalize DSH session log events into ConductorEvents
+     */
+    static adaptSessionEvent(executionId: string, event: RawSessionEvent): ConductorEvent[];
+    private static inferConsequence;
+    private static inferReversibility;
+}
+//# sourceMappingURL=event-adapter.d.ts.map

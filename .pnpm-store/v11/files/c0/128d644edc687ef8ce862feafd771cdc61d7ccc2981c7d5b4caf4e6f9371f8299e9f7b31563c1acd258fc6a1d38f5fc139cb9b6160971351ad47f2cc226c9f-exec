@@ -1,0 +1,45 @@
+/**
+ * Conductor CLI Commands Implementation
+ */
+import { ExecutionManager } from '../manager/execution-manager.js';
+import type { ConductorEvent } from '../types/event.js';
+import type { ConductorDecision } from '../types/decision.js';
+export { resolveDbPath, createRuntime, createRuntime as createManager, type ConductorRuntime } from '../composition.js';
+export declare function renderStatus(summary: ReturnType<ExecutionManager['getStatus']>): string;
+export declare function renderHistory(events: ConductorEvent[]): string;
+/** Render the pending decision queue, highest priority first. */
+export declare function renderDecisions(decisions: ConductorDecision[]): string;
+export declare function renderDecisionDetail(d: ConductorDecision): string;
+import type { Execution } from '../domain/execution.js';
+import type { AttentionModel } from '../attention/attention-orchestrator.js';
+import type { WhyNotInterrupted } from '../attention/non-interruption-why.js';
+import type { Delegation } from '../types/delegation.js';
+import type { PolicyCategory } from '../types/policy.js';
+/** Categories a human may explicitly delegate (mirrors PolicyCategory). */
+export declare const POLICY_CATEGORIES: readonly PolicyCategory[];
+/** `--since <iso|minutes>` → absolute timestamp (minutes = minutes ago). */
+export declare function parseSinceOption(raw: string | undefined, now: number): number | undefined;
+/** The cockpit view: ordered sections over the attention model. */
+export declare function renderAttentionCockpit(model: AttentionModel, executions: Execution[], decisions: ConductorDecision[], opts: {
+    now: number;
+    all?: boolean;
+    limit?: number;
+}): string;
+/** Decision explanation: existing seven-field why + ranking facts + quality. */
+export declare function renderAttentionWhyDecision(d: ConductorDecision, model: AttentionModel, allDecisions: ConductorDecision[], exec: Execution | null, now: number): string;
+/** Event explanation: why this did NOT interrupt you. */
+export declare function renderAttentionWhyEvent(e: ConductorEvent, w: WhyNotInterrupted): string;
+/** Delegation ledger (CLI `delegations`). */
+export declare function renderDelegations(list: Delegation[], now: number): string;
+/** Confirmation printed right after `conductor delegate <category>`. */
+export declare function renderDelegationGrant(d: Delegation, now: number): string;
+export interface DelegationOfferView {
+    category: string;
+    accepted: number;
+    rejected: number;
+    sampleTitles: string[];
+    offer: string;
+}
+/** Recurrence offers — these OFFER only; nothing is granted from here. */
+export declare function renderDelegationOffers(offers: DelegationOfferView[]): string;
+//# sourceMappingURL=commands.d.ts.map

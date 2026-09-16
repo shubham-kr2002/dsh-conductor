@@ -1,0 +1,54 @@
+/**
+ * "Why didn't you interrupt me?"
+ *
+ * The trust half of an Attention OS. Every event the pipeline let pass
+ * without claiming human time can be explained AFTER the fact from real,
+ * persisted facts: the stored attention classification (level/action/
+ * rule/rationale travel in event metadata), the deterministic policy
+ * evaluation, and — where a delegation covered the action — the
+ * delegation itself. No invented time savings: attention cost is
+ * reported as 'not measured' because it has never been measured.
+ */
+import type { ConductorEvent } from '../types/event.js';
+import type { PolicyEngine } from '../policy/policy-engine.js';
+import type { AttentionLevel, AttentionAction } from '../types/attention.js';
+import type { Delegation } from '../types/delegation.js';
+export interface WhyNotInterrupted {
+    /** One-line description of what the agent was allowed to do. */
+    action: string;
+    /** The stored classification this event received. */
+    attention: {
+        level: AttentionLevel;
+        action: AttentionAction;
+        ruleId?: string;
+        rationale?: string;
+    } | null;
+    /** Deterministic bullets, each backed by a persisted fact. */
+    allowedBecause: string[];
+    /** If a delegation carried it, which one. */
+    delegatedBy: {
+        id: string;
+        category: string;
+        grantedBy: string;
+    } | null;
+    /** Honest statement — attention saved is not a measured quantity. */
+    attentionSaved: 'not measured';
+}
+/**
+ * Explain why one event did not reach the human. Pure: reads the stored
+ * metadata + re-evaluates policy (deterministic function of the row).
+ */
+export declare function explainNonInterruption(event: ConductorEvent, opts?: {
+    policy?: PolicyEngine;
+    delegation?: Delegation | null;
+}): WhyNotInterrupted;
+/**
+ * Recent events that actually earned the label "allowed autonomously":
+ * actions with real content (commands/tools), classified CONTINUE/RECORD,
+ * plus delegated actions. Pure telemetry (reads, file echoes) stays out —
+ * the list should read like work done, not a log tail.
+ */
+export declare function autonomousHighlights(events: ConductorEvent[], opts?: {
+    limit?: number;
+}): ConductorEvent[];
+//# sourceMappingURL=non-interruption-why.d.ts.map

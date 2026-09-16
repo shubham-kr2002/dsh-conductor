@@ -1,0 +1,40 @@
+/**
+ * Deterministic attention prioritization
+ *
+ * Answers: "if the developer can look at ONE thing right now, what is it?"
+ * There is no numeric attention score. Ordering is a lexicographic walk
+ * over explainable factors, and every comparison can be narrated as
+ * human-readable facts (priorityFacts) — the same rows the UI renders.
+ *
+ * Starvation rule (anti-livelock): within the same consequence tier the
+ * oldest request wins; age can raise URGENT by one level after a grace
+ * period, but stale attention NEVER crosses into critical and never beats
+ * a higher-consequence item on age alone.
+ */
+import type { AttentionDisposition } from '../types/attention.js';
+import type { AttentionCandidate, AttentionFactors } from './attention-candidate.js';
+/** Age after which a waiting request gets one urgency level (5 min). */
+export declare const URGENCY_ESCALATION_MS: number;
+/** Urgency with the deterministic aging rule applied. */
+export declare function effectiveUrgency(c: AttentionCandidate, now: number): AttentionFactors['urgency'];
+/**
+ * Full lexicographic comparison. Lower return value = higher priority
+ * (Array.sort convention). Deterministic total order, ties broken by
+ * creation time then id for stability.
+ */
+export declare function compareAttention(now: number): (a: AttentionCandidate, b: AttentionCandidate) => number;
+export interface PriorityFact {
+    factor: string;
+    value: string;
+}
+/** The factual basis of an item's placement — what the UI/CLI shows. */
+export declare function priorityFacts(c: AttentionCandidate, now: number): PriorityFact[];
+export declare function formatAge(ms: number): string;
+/** Cockpit sections + human language for dispositions. */
+export interface DispositionLanguage {
+    label: string;
+    section: 'needs-you' | 'waiting' | 'watching' | 'recorded';
+    verb: string;
+}
+export declare function dispositionLanguage(d: AttentionDisposition): DispositionLanguage;
+//# sourceMappingURL=attention-priority.d.ts.map

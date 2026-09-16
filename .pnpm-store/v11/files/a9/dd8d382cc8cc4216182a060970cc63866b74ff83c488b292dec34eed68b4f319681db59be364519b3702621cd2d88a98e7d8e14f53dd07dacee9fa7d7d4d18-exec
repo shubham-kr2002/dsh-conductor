@@ -1,0 +1,30 @@
+/**
+ * Semantic timeline
+ *
+ * Collapses the raw event log into the handful of things a human would
+ * actually narrate: "ran the tests → failed", "edited 3 files", "needs a
+ * decision". Raw events stay available underneath; this is the default
+ * view, because a transcript is the enemy of attention economy.
+ */
+import type { ConductorEvent } from '../types/event.js';
+import type { ConductorDecision } from '../types/decision.js';
+export type TimelineKind = 'lifecycle' | 'decision' | 'question' | 'command' | 'files' | 'test' | 'intervention' | 'blocked';
+export type TimelineTone = 'ok' | 'warn' | 'bad' | 'info';
+export interface TimelineEntry {
+    at: number;
+    kind: TimelineKind;
+    text: string;
+    tone: TimelineTone;
+    /** Number of raw events collapsed into this entry. */
+    count: number;
+    /** Secondary line: identifiers, error summary, file names, … */
+    detail?: string;
+}
+/**
+ * Build the semantic timeline. `decisions` are rendered from the decision
+ * records themselves (they carry status + resolution, the events don't).
+ */
+export declare function condenseTimeline(events: ConductorEvent[], decisions?: ConductorDecision[], opts?: {
+    limit?: number;
+}): TimelineEntry[];
+//# sourceMappingURL=timeline.d.ts.map

@@ -1,0 +1,7 @@
+/**
+ * Conductor Handoff Types
+ *
+ * Structured state transferred between agents without dumping raw transcripts.
+ */
+export {};
+//# sourceMappingURL=handoff.js.map

@@ -1,0 +1,108 @@
+/**
+ * "Why didn't you interrupt me?"
+ *
+ * The trust half of an Attention OS. Every event the pipeline let pass
+ * without claiming human time can be explained AFTER the fact from real,
+ * persisted facts: the stored attention classification (level/action/
+ * rule/rationale travel in event metadata), the deterministic policy
+ * evaluation, and — where a delegation covered the action — the
+ * delegation itself. No invented time savings: attention cost is
+ * reported as 'not measured' because it has never been measured.
+ */
+function describeAction(e) {
+    const p = e.payload;
+    const args = p.arguments ?? {};
+    const command = p.command ?? args.command;
+    const path = p.filePath ?? args.file_path;
+    if (command)
+        return `run \`${command}\``;
+    if (path)
+        return `${String(p.action ?? 'modify')} \`${path}\``;
+    if (p.toolName)
+        return `use \`${String(p.toolName)}\``;
+    return e.type;
+}
+/**
+ * Explain why one event did not reach the human. Pure: reads the stored
+ * metadata + re-evaluates policy (deterministic function of the row).
+ */
+export function explainNonInterruption(event, opts = {}) {
+    const stored = event.metadata?.attention;
+    const reasons = [];
+    const p = event.payload;
+    if (stored) {
+        reasons.push(`attention classified it ${(stored.level ?? 'SILENT').toLowerCase()} (${(stored.action ?? 'CONTINUE').toLowerCase()}) — ${stored.rationale ?? stored.ruleId ?? 'no rule rationale stored'}`);
+        if (stored.action === 'CONTINUE')
+            reasons.push('no human action was required to keep the run safe');
+        if (stored.action === 'RECORD')
+            reasons.push('worth recording, not worth interrupting for');
+    }
+    let evalResult;
+    if (opts.policy) {
+        if (typeof p.command === 'string')
+            evalResult = opts.policy.evaluateShellCommand(p.command);
+        else if (typeof p.toolName === 'string') {
+            evalResult = opts.policy.evaluateToolExecution(String(p.toolName), p.arguments ?? {});
+        }
+        if (evalResult) {
+            if (evalResult.action === 'allow') {
+                reasons.push(`policy permits it${evalResult.ruleId ? ` (rule ${evalResult.ruleId})` : ''}: ${evalResult.reason ?? 'no restriction matched'}`);
+            }
+            else if (evalResult.action === 'require_approval') {
+                reasons.push(`policy requires approval, but a standing authority covered it`);
+            }
+        }
+    }
+    else {
+        reasons.push('no protected resource, credential, or deployment target was involved');
+    }
+    const reversibility = p.reversibility;
+    if (reversibility === 'reversible')
+        reasons.push('the action is reversible');
+    const consequence = p.consequence;
+    if (consequence === 'low' || consequence === 'medium')
+        reasons.push(`consequence was assessed ${consequence}`);
+    const delegation = opts.delegation ?? null;
+    if (delegation) {
+        reasons.push(`you delegated this category to the agent (delegation ${delegation.id}, granted by ${delegation.grantedBy})`);
+    }
+    return {
+        action: describeAction(event),
+        attention: stored
+            ? {
+                level: stored.level ?? 'SILENT',
+                action: stored.action ?? 'CONTINUE',
+                ...(stored.ruleId ? { ruleId: stored.ruleId } : {}),
+                ...(stored.rationale ? { rationale: stored.rationale } : {}),
+            }
+            : null,
+        allowedBecause: reasons.length > 0 ? reasons : ['the pipeline recorded nothing that asked for human judgment'],
+        delegatedBy: delegation ? { id: delegation.id, category: delegation.category, grantedBy: delegation.grantedBy } : null,
+        attentionSaved: 'not measured',
+    };
+}
+/**
+ * Recent events that actually earned the label "allowed autonomously":
+ * actions with real content (commands/tools), classified CONTINUE/RECORD,
+ * plus delegated actions. Pure telemetry (reads, file echoes) stays out —
+ * the list should read like work done, not a log tail.
+ */
+export function autonomousHighlights(events, opts = {}) {
+    const out = [];
+    const sorted = [...events].sort((a, b) => b.timestamp - a.timestamp);
+    for (const e of sorted) {
+        if (out.length >= (opts.limit ?? 12))
+            break;
+        const stored = e.metadata?.attention;
+        if (e.type === 'policy.delegated') {
+            out.push(e);
+            continue;
+        }
+        if (e.type !== 'command.completed' && e.type !== 'test.passed')
+            continue;
+        if (stored && (stored.action === 'CONTINUE' || stored.action === 'RECORD'))
+            out.push(e);
+    }
+    return out.reverse();
+}
+//# sourceMappingURL=non-interruption-why.js.map

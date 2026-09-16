@@ -1,0 +1,8 @@
+/**
+ * Conductor Event Types
+ *
+ * Normalized internal event model for Conductor.
+ * Conductor's core domain does not depend on specific DSH tools or internal types.
+ */
+export {};
+//# sourceMappingURL=event.js.map

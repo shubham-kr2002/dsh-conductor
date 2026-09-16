@@ -1,0 +1,80 @@
+/**
+ * SQLite Event Repository
+ */
+export class SqliteEventRepository {
+    db;
+    constructor(db) {
+        this.db = db;
+    }
+    save(event) {
+        const stmt = this.db.raw.prepare(`
+      INSERT INTO execution_events (id, execution_id, type, source, timestamp, payload_json, metadata_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO NOTHING
+    `);
+        stmt.run(event.id, event.executionId, event.type, event.source, event.timestamp, JSON.stringify(event.payload), event.metadata ? JSON.stringify(event.metadata) : null);
+    }
+    listByExecution(executionId, filter = {}) {
+        let sql = `
+      SELECT id, execution_id, type, source, timestamp, payload_json, metadata_json
+      FROM execution_events
+      WHERE execution_id = ?
+    `;
+        const params = [executionId];
+        if (filter.type) {
+            sql += ' AND type = ?';
+            params.push(filter.type);
+        }
+        // Deterministic tie-break on id.
+        if (filter.limit !== undefined && filter.offset === undefined) {
+            // "newest N" without offset: take the tail chronologically.
+            sql += ' ORDER BY timestamp DESC, id DESC LIMIT ?';
+            params.push(filter.limit);
+            const tail = this.query(sql, params);
+            tail.reverse();
+            return tail;
+        }
+        sql += ' ORDER BY timestamp ASC, id ASC';
+        if (filter.limit !== undefined) {
+            sql += ' LIMIT ?';
+            params.push(filter.limit);
+            if (filter.offset !== undefined) {
+                sql += ' OFFSET ?';
+                params.push(filter.offset);
+            }
+        }
+        return this.query(sql, params);
+    }
+    query(sql, params) {
+        const stmt = this.db.raw.prepare(sql);
+        const rows = stmt.all(...params);
+        const events = [];
+        for (const row of rows) {
+            try {
+                const payload = JSON.parse(row.payload_json);
+                const metadata = row.metadata_json ? JSON.parse(row.metadata_json) : undefined;
+                events.push({
+                    id: row.id,
+                    executionId: row.execution_id,
+                    type: row.type,
+                    source: row.source,
+                    timestamp: row.timestamp,
+                    payload,
+                    metadata,
+                });
+            }
+            catch {
+                // Skip corrupted row
+            }
+        }
+        return events;
+    }
+    countByExecution(executionId) {
+        const stmt = this.db.raw.prepare(`
+      SELECT COUNT(*) as count FROM execution_events WHERE execution_id = ?
+    `);
+        const row = stmt.get(executionId);
+        return row?.count ?? 0;
+    }
+}
+//# sourceMappingURL=event-repository.js.map

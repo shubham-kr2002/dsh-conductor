@@ -1,0 +1,23 @@
+/**
+ * Conductor — DSH bundle entry
+ *
+ * The official Cordis plugin module installed via the bundle mechanism
+ * (`package.json#dsh.bundle.patch` → `cordis.patch.yml` → profile layer →
+ * this module). It is deliberately thin: the profile patch row carries
+ * configuration, `mountConductor` owns the composition, and everything
+ * below remains the DSH-free control plane.
+ *
+ * Install path:  dsh plugin --profile <p> add <dsh-conductor>
+ * Do NOT also hand-add a conductor loader row to the profile patch — one
+ * mounting path only (duplicate mounts are refused below regardless).
+ */
+import type { CordisCtx } from './cordis-plugin.js';
+export declare const name = "dsh-conductor";
+export declare function apply(ctx: CordisCtx, config: Record<string, unknown> | undefined): void;
+/** Default export mirrors the named plugin for loaders that prefer it. */
+declare const _default: {
+    name: string;
+    apply: typeof apply;
+};
+export default _default;
+//# sourceMappingURL=bundle-entry.d.ts.map

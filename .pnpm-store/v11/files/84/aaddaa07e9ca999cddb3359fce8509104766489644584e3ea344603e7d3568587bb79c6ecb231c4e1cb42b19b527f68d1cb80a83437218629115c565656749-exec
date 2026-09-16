@@ -1,0 +1,120 @@
+/**
+ * SQLite Decision Repository
+ */
+function rowToDecision(row) {
+    try {
+        return {
+            id: row.id,
+            executionId: row.execution_id,
+            title: row.title,
+            question: row.question,
+            context: row.context,
+            impact: row.impact,
+            urgency: row.urgency,
+            confidence: row.confidence,
+            status: row.status,
+            options: JSON.parse(row.options_json),
+            recommendation: row.recommendation ?? undefined,
+            resolution: row.resolution_json
+                ? JSON.parse(row.resolution_json)
+                : undefined,
+            createdAt: row.created_at,
+            updatedAt: row.updated_at,
+            expiresAt: row.expires_at ?? undefined,
+            sourceEventId: row.source_event_id ?? undefined,
+            dedupeKey: row.dedupe_key ?? undefined,
+            subject: row.subject ?? undefined,
+            consumedAt: row.consumed_at ?? undefined,
+            why: row.why_json
+                ? JSON.parse(row.why_json)
+                : undefined,
+            quality: row.quality_json
+                ? JSON.parse(row.quality_json)
+                : undefined,
+        };
+    }
+    catch {
+        return null;
+    }
+}
+export class SqliteDecisionRepository {
+    db;
+    constructor(db) {
+        this.db = db;
+    }
+    save(decision) {
+        const stmt = this.db.raw.prepare(`
+      INSERT INTO decisions (
+        id, execution_id, title, question, context, impact, urgency, confidence,
+        status, options_json, recommendation, resolution_json,
+        created_at, updated_at, expires_at, source_event_id, dedupe_key, subject, consumed_at,
+        why_json, quality_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      -- Concurrency-safe upsert (P10 adversarial matrix, #2c/#2d): aggregate
+      -- saves may only advance a row, never rewind or clobber settled truth.
+      -- Once resolved (status != 'pending') the verdict is FROZEN against any
+      -- save from a stale reader; consumed_at is only ever set, never unset;
+      -- exactly-once claims stay owned by tryConsume's conditional UPDATE.
+      ON CONFLICT(id) DO UPDATE SET
+        title = excluded.title,
+        question = excluded.question,
+        context = excluded.context,
+        impact = excluded.impact,
+        urgency = excluded.urgency,
+        confidence = excluded.confidence,
+        status = CASE WHEN decisions.status = 'pending' THEN excluded.status ELSE decisions.status END,
+        options_json = excluded.options_json,
+        recommendation = excluded.recommendation,
+        resolution_json = CASE WHEN decisions.status = 'pending' THEN excluded.resolution_json ELSE decisions.resolution_json END,
+        updated_at = excluded.updated_at,
+        expires_at = excluded.expires_at,
+        source_event_id = excluded.source_event_id,
+        dedupe_key = excluded.dedupe_key,
+        subject = excluded.subject,
+        consumed_at = COALESCE(decisions.consumed_at, excluded.consumed_at),
+        why_json = excluded.why_json,
+        quality_json = excluded.quality_json
+    `);
+        stmt.run(decision.id, decision.executionId, decision.title, decision.question, decision.context, decision.impact, decision.urgency, decision.confidence, decision.status, JSON.stringify(decision.options), decision.recommendation ?? null, decision.resolution ? JSON.stringify(decision.resolution) : null, decision.createdAt, decision.updatedAt, decision.expiresAt ?? null, decision.sourceEventId ?? null, decision.dedupeKey ?? null, decision.subject ?? null, decision.consumedAt ?? null, decision.why ? JSON.stringify(decision.why) : null, decision.quality ? JSON.stringify(decision.quality) : null);
+    }
+    findById(id) {
+        const stmt = this.db.raw.prepare('SELECT * FROM decisions WHERE id = ?');
+        const row = stmt.get(id);
+        return row ? rowToDecision(row) : null;
+    }
+    list(filter = {}) {
+        let sql = 'SELECT * FROM decisions';
+        const where = [];
+        const params = [];
+        if (filter.status) {
+            where.push('status = ?');
+            params.push(filter.status);
+        }
+        if (filter.executionId) {
+            where.push('execution_id = ?');
+            params.push(filter.executionId);
+        }
+        if (where.length > 0) {
+            sql += ' WHERE ' + where.join(' AND ');
+        }
+        sql += ' ORDER BY created_at ASC';
+        const stmt = this.db.raw.prepare(sql);
+        const rows = stmt.all(...params);
+        const results = [];
+        for (const row of rows) {
+            const d = rowToDecision(row);
+            if (d)
+                results.push(d);
+        }
+        return results;
+    }
+    delete(id) {
+        const stmt = this.db.raw.prepare('DELETE FROM decisions WHERE id = ?');
+        return stmt.run(id).changes > 0;
+    }
+    tryConsume(id, at) {
+        const stmt = this.db.raw.prepare('UPDATE decisions SET consumed_at = ?, updated_at = ? WHERE id = ? AND consumed_at IS NULL');
+        return stmt.run(at, at, id).changes === 1;
+    }
+}
+//# sourceMappingURL=decision-repository.js.map

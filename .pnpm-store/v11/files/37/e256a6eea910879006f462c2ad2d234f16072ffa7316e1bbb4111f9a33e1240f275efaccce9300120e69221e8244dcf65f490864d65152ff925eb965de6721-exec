@@ -1,0 +1,260 @@
+/**
+ * Conductor Bridge
+ *
+ * The DSH-facing control plane: maps host extension-point interactions
+ * (tool pre-execution gates, approvals, agent questions, step scheduling,
+ * session events) onto Conductor executions, policy, attention, and the
+ * decision queue. Pure logic over the normalized host surface — no DSH
+ * imports, per the architecture rule that the core never depends on DSH.
+ */
+import { EventAdapter } from '../adapter/event-adapter.js';
+import { approvalSubject } from '../policy/approval-subject.js';
+const HELD_STATUSES = new Set(['PAUSED', 'BLOCKED', 'TAKEN_OVER', 'HANDOFF_PENDING']);
+function argsOf(exec) {
+    return typeof exec.arguments === 'object' && exec.arguments !== null
+        ? exec.arguments
+        : {};
+}
+function questionConsequence(q) {
+    const text = `${q.question} ${q.detail ?? ''}`.toLowerCase();
+    if (/irreversib|delete|drop |destroy|production|customer|money|payment|charge|credential|secret|security|migration|schema|auth\b/i.test(text)) {
+        return 'high';
+    }
+    return 'medium';
+}
+export class ConductorBridge {
+    deps;
+    /** host agent/session key -> execution id */
+    _byHostKey = new Map();
+    _activeExecutionId;
+    _disposers = [];
+    /** callId -> call identity, so post-commit tool/result rows can be joined. */
+    _calls = new Map();
+    constructor(deps) {
+        this.deps = deps;
+    }
+    get activeExecutionId() {
+        return this._activeExecutionId;
+    }
+    /** Register an execution for a goal and bind it to a host agent/session. */
+    startExecution(goal, opts) {
+        const exec = this.deps.manager.createExecution({
+            goal,
+            workspaceRoot: opts.workspaceRoot,
+            constraints: opts.constraints,
+        });
+        exec.start('system');
+        this.deps.manager.executionRepo.save(exec);
+        this.deps.manager.processEvent(EventAdapter.createEvent(exec.id, 'execution.started', { executionId: exec.id, goal }, 'dsh'));
+        this._activeExecutionId = exec.id;
+        if (opts.hostKey)
+            this._byHostKey.set(opts.hostKey, exec.id);
+        return exec;
+    }
+    /**
+     * Attach this bridge to an ALREADY OPEN execution (adoption on remount).
+     * Deliberately does NOT clear a pause: the pending decisions on that
+     * execution still gate every consequential action.
+     */
+    adoptExecution(executionId) {
+        this._activeExecutionId = executionId;
+    }
+    bindHostKey(hostKey, executionId) {
+        this._byHostKey.set(hostKey, executionId);
+        this._activeExecutionId = executionId;
+    }
+    /** Look up the live call a session-log tool/result refers to. */
+    rememberedCall(callId) {
+        return this._calls.get(callId);
+    }
+    rememberCall(callId, name, args) {
+        this._calls.set(callId, { name, arguments: args });
+        if (this._calls.size > 500) {
+            const oldest = this._calls.keys().next().value;
+            if (oldest !== undefined)
+                this._calls.delete(oldest);
+        }
+    }
+    executionFor(exec) {
+        const key = (exec.agentId ? this._byHostKey.get(`agent:${exec.agentId}`) : undefined) ??
+            (exec.sessionId ? this._byHostKey.get(`session:${exec.sessionId}`) : undefined);
+        const id = key ?? this._activeExecutionId;
+        return id ? (this.deps.manager.executionRepo.findById(id) ?? undefined) : undefined;
+    }
+    // -------------------------------------------------------------------------
+    // Extension-point handlers (signatures mirror DSH waterfalls)
+    // -------------------------------------------------------------------------
+    /**
+     * `tools/pre-execute`: observe the action, classify it, and gate dispatch.
+     * Returning undefined delegates to DSH (allow path); returning a decision
+     * claims the call. Approved retries pass once, at most.
+     */
+    preToolExecute(exec) {
+        const execution = this.executionFor(exec);
+        if (!execution)
+            return undefined; // unmanaged agent — hands off entirely
+        const args = argsOf(exec);
+        const subject = approvalSubject(exec.name, args);
+        this.rememberCall(exec.callId, exec.name, args);
+        if (HELD_STATUSES.has(execution.status)) {
+            return {
+                kind: 'deny',
+                reason: `Conductor holds execution ${execution.id} (${execution.status}) for human judgment. ` +
+                    `Resolve with "conductor decisions", then the agent may retry.`,
+            };
+        }
+        // Human already approved this exact action (via CLI resolve)? Consume the
+        // one-time token and let THIS retry through. Shared DB makes it work
+        // across processes without any polling.
+        if (this.deps.decisions.consumeApproval(execution.id, subject)) {
+            // Deliberately skip re-observation: classifying an already-approved
+            // action again would PAUSE the run we just cleared.
+            return undefined;
+        }
+        const policy = this.deps.manager.policyEngine.evaluateToolExecution(exec.name, args);
+        // Observe (classifies; may queue a decision and PAUSE the execution).
+        for (const evt of EventAdapter.adaptToolCall(execution.id, {
+            callId: exec.callId,
+            name: exec.name,
+            arguments: args,
+            agentId: exec.agentId,
+        })) {
+            this.deps.manager.processEvent(evt);
+        }
+        if (policy.action === 'deny') {
+            return { kind: 'deny', reason: `Conductor policy: ${policy.reason ?? 'denied'}` };
+        }
+        if (policy.action === 'require_approval') {
+            // A standing human delegation (checked identically by the manager,
+            // which already recorded policy.delegated forensics above) releases
+            // the gate — but never while held, and never over a current denial.
+            const delegations = this.deps.manager.delegations;
+            if (delegations) {
+                const fresh0 = this.deps.manager.executionRepo.findById(execution.id);
+                if (fresh0 && !HELD_STATUSES.has(fresh0.status)) {
+                    const covered = delegations.covers({
+                        executionId: execution.id,
+                        category: policy.category,
+                        ...(policy.ruleId ? { ruleId: policy.ruleId } : {}),
+                        resource: String(args.command ?? args.file_path ?? args.path ?? ''),
+                        subject,
+                        now: Date.now(),
+                    });
+                    if (covered)
+                        return undefined; // allow — delegated
+                }
+            }
+            const fresh = this.deps.manager.executionRepo.findById(execution.id);
+            const nowHeld = fresh ? HELD_STATUSES.has(fresh.status) : false;
+            return {
+                kind: 'deny',
+                reason: nowHeld
+                    ? `Conductor paused this run for your judgment: ${policy.reason ?? 'approval required'}. ` +
+                        `Approve with "conductor decisions" — the agent will retry once you do.`
+                    : `Conductor policy requires approval: ${policy.reason ?? ''}`,
+            };
+        }
+        return undefined; // allow — delegate to DSH dispatch
+    }
+    /**
+     * `approval/request`: when DSH itself asks for approval of a gated tool,
+     * Conductor answers REJECTED while a human holds the execution, so the
+     * fail-fast deny is visible to the agent instead of hanging on a prompt
+     * no one is watching. Outside held states it delegates (undefined).
+     */
+    onApprovalRequest(req) {
+        const execution = this.executionFor(req);
+        if (!execution)
+            return undefined;
+        if (HELD_STATUSES.has(execution.status))
+            return 'rejected';
+        return undefined;
+    }
+    /**
+     * `agent/pre-step`: freeze the loop while a human holds the wheel.
+     * DSH consumes claimed inbox messages on reject, so the mount layer must
+     * re-inject them (`holdForHuman` instructs it to).
+     */
+    preStep(payload) {
+        const execution = this.executionFor(payload);
+        if (!execution)
+            return undefined;
+        if (HELD_STATUSES.has(execution.status)) {
+            return { kind: 'reject', holdForHuman: true };
+        }
+        return undefined; // enter — delegate
+    }
+    /**
+     * `user-questions/request`: mirror the agent's question into the decision
+     * queue. In auto-answer mode, routine recommended-option questions are
+     * answered without interrupting the human; anything else delegates so the
+     * human answers through the DSH UI (with a Conductor decision also queued
+     * if the attention engine paused the run).
+     */
+    onQuestion(req) {
+        const execution = this.executionFor(req);
+        if (!execution)
+            return undefined;
+        const first = req.questions[0];
+        for (const q of req.questions) {
+            for (const evt of EventAdapter.adaptToolCall(execution.id, {
+                callId: q.id,
+                name: 'ask_user_question',
+                arguments: {
+                    questions: [{ question: q.question, options: q.options }],
+                    ...(q.detail ? { context: q.detail } : {}),
+                    consequence: questionConsequence(q),
+                },
+            })) {
+                this.deps.manager.processEvent(evt);
+            }
+        }
+        if (this.deps.autoAnswerRoutine && first) {
+            const fresh = this.deps.manager.executionRepo.findById(execution.id);
+            const held = fresh ? HELD_STATUSES.has(fresh.status) : false;
+            if (!held && !questionLooksHighStakes(first)) {
+                const chosen = first.options && first.options.length > 0 ? [first.options[0].label] : ['yes'];
+                return { answers: [{ id: first.id, selected: chosen }] };
+            }
+        }
+        return undefined; // the human answers — via DSH UI and/or the conductor queue
+    }
+    /** `tools/result` / `session/event`: ingest post-commit activity. */
+    onToolResult(result) {
+        const execution = this.executionFor(result);
+        if (!execution)
+            return;
+        for (const evt of EventAdapter.adaptToolResult(execution.id, {
+            callId: result.callId,
+            toolName: result.name,
+            isError: result.isError,
+            value: result.text,
+            timestamp: Date.now(),
+        }, (result.arguments ?? undefined))) {
+            this.deps.manager.processEvent(evt);
+        }
+    }
+    onSessionEvent(evt) {
+        const executionId = this._activeExecutionId;
+        if (!executionId)
+            return;
+        for (const mapped of EventAdapter.adaptSessionEvent(executionId, evt)) {
+            this.deps.manager.processEvent(mapped);
+        }
+    }
+    // -------------------------------------------------------------------------
+    // Mounting
+    // -------------------------------------------------------------------------
+    /** Attach to a host (real cordis bindings in production, fakes in tests). */
+    attach(bindings) {
+        this._disposers.push(bindings.on('session/event', (evt) => this.onSessionEvent(evt)), bindings.on('tools/result', (r) => this.onToolResult(r)), bindings.on('tools/pre-execute', (exec) => this.preToolExecute(exec)), bindings.on('user-questions/request', (req) => this.onQuestion(req)), bindings.on('agent/pre-step', (payload) => this.preStep(payload)), bindings.on('approval/request', (req) => this.onApprovalRequest(req)));
+        return () => {
+            while (this._disposers.length > 0)
+                this._disposers.pop()();
+        };
+    }
+}
+function questionLooksHighStakes(q) {
+    return questionConsequence(q) === 'high';
+}
+//# sourceMappingURL=conductor-bridge.js.map

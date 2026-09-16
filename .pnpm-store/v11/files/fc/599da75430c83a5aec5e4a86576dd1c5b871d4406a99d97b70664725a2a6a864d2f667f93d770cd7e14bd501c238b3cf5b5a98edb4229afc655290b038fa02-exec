@@ -1,0 +1,69 @@
+/**
+ * Composition root
+ *
+ * The single place that assembles the Conductor runtime (storage →
+ * repositories → services → manager). CLI, UI server, mounted DSH plugin
+ * and demos all compose through here, so there is exactly one definition
+ * of "what the control plane contains".
+ */
+import { resolve } from 'node:path';
+import { ConductorDatabase } from './storage/database.js';
+import { SqliteExecutionRepository } from './storage/execution-repository.js';
+import { SqliteEventRepository } from './storage/event-repository.js';
+import { SqliteDecisionRepository } from './storage/decision-repository.js';
+import { SqliteDelegationRepository } from './storage/delegation-repository.js';
+import { SqliteTakeoverRepository } from './storage/takeover-repository.js';
+import { SqliteHandoffRepository } from './storage/handoff-repository.js';
+import { DecisionQueue } from './decision/decision-queue.js';
+import { DelegationService } from './delegation/delegation-service.js';
+import { TakeoverService } from './takeover/takeover-service.js';
+import { HandoffService } from './handoff/handoff-service.js';
+import { ExecutionManager } from './manager/execution-manager.js';
+export function resolveDbPath() {
+    if (process.env.CONDUCTOR_DB_PATH) {
+        return process.env.CONDUCTOR_DB_PATH;
+    }
+    // Try local workspace .conductor/ directory
+    return resolve(process.cwd(), '.conductor', 'conductor.db');
+}
+export function createRuntime(dbPath) {
+    const path = dbPath ?? resolveDbPath();
+    const db = new ConductorDatabase({ path });
+    const execRepo = new SqliteExecutionRepository(db);
+    const eventRepo = new SqliteEventRepository(db);
+    const decisionRepo = new SqliteDecisionRepository(db);
+    const takeoverRepo = new SqliteTakeoverRepository(db);
+    const handoffRepo = new SqliteHandoffRepository(db);
+    const delegationRepo = new SqliteDelegationRepository(db);
+    const delegations = new DelegationService({ delegationRepo, decisionRepo });
+    const decisions = new DecisionQueue(decisionRepo, execRepo);
+    const manager = new ExecutionManager(execRepo, eventRepo, undefined, undefined, decisions);
+    manager.delegations = delegations;
+    const takeover = new TakeoverService({
+        executionRepo: execRepo,
+        eventRepo,
+        decisionRepo,
+        takeoverRepo,
+    });
+    const handoff = new HandoffService({
+        executionRepo: execRepo,
+        eventRepo,
+        decisionRepo,
+        handoffRepo,
+    });
+    return {
+        manager,
+        decisions,
+        takeover,
+        handoff,
+        execRepo,
+        eventRepo,
+        decisionRepo,
+        takeoverRepo,
+        handoffRepo,
+        delegationRepo,
+        delegations,
+        db,
+    };
+}
+//# sourceMappingURL=composition.js.map

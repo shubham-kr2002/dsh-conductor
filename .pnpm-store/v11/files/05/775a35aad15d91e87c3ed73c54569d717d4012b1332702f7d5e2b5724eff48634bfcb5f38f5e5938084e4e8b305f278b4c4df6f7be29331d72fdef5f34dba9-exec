@@ -1,0 +1,607 @@
+/**
+ * Conductor control surface — HTTP + event stream
+ *
+ * A deliberately small server (node:http only, zero new dependencies) that
+ * exposes the SAME control plane the CLI uses: one SQLite file, the same
+ * repositories, DecisionQueue, TakeoverService and derivations. No state
+ * lives in the browser; the page is a window onto the database.
+ *
+ * The Phase-10 surface is an ATTENTION COCKPIT: /api/attention runs the
+ * durable rows through buildAttentionModel (on demand, never hot-path) and
+ * serves ordered, sectioned items with their priority facts; the delegation
+ * endpoints expose exactly the authority the developer chose to entrust.
+ *
+ * Live updates: cheapest propagation that works across processes — a poll
+ * of a one-row fingerprint query every ~900ms pushed over Server-Sent
+ * Events, plus an in-process nudge via manager.subscribe. No Redis, no
+ * WebSocket layer.
+ */
+import { createServer } from 'node:http';
+import { readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { extname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createRuntime } from '../cli/commands.js';
+import { computeAttentionMetrics } from '../summary/attention-metrics.js';
+import { condenseTimeline } from '../summary/timeline.js';
+import { statusLanguage, decisionStatusLabel } from '../summary/status-language.js';
+import { buildAwaySummary } from '../summary/away-mode.js';
+import { deriveDecisionQuality, rollupDecisionQuality } from '../decision/decision-quality.js';
+import { decisionPriority } from '../decision/decision-queue.js';
+import { buildAttentionModel } from '../attention/attention-orchestrator.js';
+import { dispositionLanguage, priorityFacts } from '../attention/attention-priority.js';
+import { autonomousHighlights, explainNonInterruption } from '../attention/non-interruption-why.js';
+import { DEFAULT_POLICY_RULES } from '../policy/policy-engine.js';
+const nowFn = () => Date.now();
+/** Categories a human may delegate: the policy categories plus 'any'. */
+const DELEGABLE_CATEGORIES = new Set([
+    'any',
+    'filesystem',
+    'shell',
+    'dependencies',
+    'git',
+    'deployment',
+    'credentials',
+    'production_resources',
+]);
+export async function startConductorUi(options) {
+    const host = options.host ?? '127.0.0.1';
+    const pollMs = options.pollMs ?? 900;
+    if (!existsSync(join(options.publicDir ?? fileURLToPath(new URL('./public/', import.meta.url)), 'index.html'))) {
+        throw new Error(`UI assets missing at ${options.publicDir ?? './public/'} — run \`pnpm build\` before \`conductor ui\`.`);
+    }
+    const ownRuntime = !options.runtime;
+    const runtime = options.runtime ?? createRuntime(options.dbPath);
+    const publicDir = options.publicDir ?? fileURLToPath(new URL('./public/', import.meta.url));
+    const streams = new Set();
+    let lastFingerprint = '';
+    let closed = false;
+    // ── fingerprint: one cheap aggregate query, safe on the hot path ──
+    // P10: delegations change what the cockpit shows (covers, offers, the
+    // popover count), so grants and revocations must nudge the stream too.
+    const fpStmt = runtime.db.raw.prepare(`
+    SELECT
+      (SELECT COUNT(*) FROM execution_events) AS e,
+      (SELECT COUNT(*) FROM executions)       AS x,
+      (SELECT MAX(updated_at) FROM executions) AS xu,
+      (SELECT COUNT(*) FROM decisions)        AS d,
+      (SELECT MAX(updated_at) FROM decisions) AS du,
+      (SELECT COUNT(*) FROM decisions WHERE consumed_at IS NOT NULL) AS dc,
+      (SELECT COUNT(*) FROM takeovers)        AS t,
+      (SELECT COUNT(*) FROM delegations)      AS dl,
+      (SELECT COUNT(*) FROM delegations WHERE revoked_at IS NOT NULL) AS drv,
+      (SELECT MAX(granted_at) FROM delegations) AS dlg
+  `);
+    function fingerprint() {
+        const row = fpStmt.get();
+        return Object.values(row).map((v) => String(v ?? 0)).join(':');
+    }
+    function broadcast(payload) {
+        const frame = `data: ${JSON.stringify(payload)}\n\n`;
+        for (const res of streams) {
+            try {
+                res.write(frame);
+            }
+            catch {
+                streams.delete(res);
+            }
+        }
+    }
+    // ── read models ──
+    function pendingByExec() {
+        const map = new Map();
+        for (const d of runtime.decisionRepo.list({ status: 'pending' })) {
+            const list = map.get(d.executionId) ?? [];
+            list.push(d);
+            map.set(d.executionId, list);
+        }
+        return map;
+    }
+    function cardFor(exec, pending) {
+        const all = runtime.decisionRepo.list({ executionId: exec.id });
+        // interventions are the domain-level record of every take-over path
+        const takeovers = exec.interventions.filter((i) => i.type === 'take_over').length;
+        const metrics = computeAttentionMetrics(exec, all, { now: nowFn(), takeoverCount: takeovers });
+        const lang = statusLanguage(exec.status);
+        const events = runtime.eventRepo.listByExecution(exec.id, { limit: 120 });
+        const timeline = condenseTimeline(events, all, { limit: 40 });
+        const last = timeline[timeline.length - 1];
+        return {
+            executionId: exec.id,
+            goal: exec.goal,
+            status: exec.status,
+            statusLabel: lang.label,
+            statusMeaning: lang.meaning,
+            tone: lang.tone,
+            needsYou: lang.needsYou,
+            agent: exec.agent.id,
+            phase: exec.currentPhase,
+            progress: exec.progressSummary,
+            lastActivity: last ? last.text : exec.nextAction ?? 'awaiting first activity',
+            filesChanged: exec.workspace.filesModified.length + exec.workspace.filesCreated.length + exec.workspace.filesDeleted.length,
+            pendingDecisions: pending.length,
+            metrics: {
+                totalMs: metrics.totalMs,
+                autonomousMs: metrics.autonomousMs,
+                heldMs: metrics.heldMs,
+                humanControlMs: metrics.humanControlMs,
+                attentionRatio: metrics.attentionRatio,
+                interruptions: metrics.interruptions,
+            },
+        };
+    }
+    function decisionView(d, execGoal) {
+        return {
+            id: d.id,
+            executionId: d.executionId,
+            executionGoal: execGoal,
+            status: d.status,
+            statusLabel: decisionStatusLabel(d.status),
+            title: d.title,
+            question: d.question,
+            context: d.context,
+            impact: d.impact,
+            urgency: d.urgency,
+            confidence: d.confidence,
+            ...(d.recommendation !== undefined ? { recommendation: d.recommendation } : {}),
+            options: d.options,
+            ...(d.why !== undefined ? { why: d.why } : {}),
+            quality: deriveDecisionQuality(d, runtime.decisionRepo.list({ executionId: d.executionId }), null),
+            createdAt: d.createdAt,
+            ...(d.resolution
+                ? {
+                    resolvedAt: d.resolution.resolvedAt,
+                    resolvedBy: d.resolution.resolvedBy,
+                    ...(d.resolution.selectedOptionId !== undefined ? { selectedOptionId: d.resolution.selectedOptionId } : {}),
+                    ...(d.resolution.customValue !== undefined ? { customValue: d.resolution.customValue } : {}),
+                }
+                : {}),
+            priority: decisionPriority(d),
+            isQuestion: d.title.startsWith('Agent question') || (d.options.length > 0 && !d.subject),
+        };
+    }
+    // ── attention model (P10) — pure derivation over durable rows ──
+    /** Recent bounded events across ALL active executions (observations feed the batch pass). */
+    function attentionEvents(executions) {
+        const out = [];
+        for (const e of executions) {
+            if (e.isTerminal())
+                continue;
+            for (const ev of runtime.eventRepo.listByExecution(e.id, { limit: 120 }))
+                out.push(ev);
+        }
+        return out;
+    }
+    function buildModel(now = nowFn()) {
+        const executions = runtime.execRepo.list({});
+        const decisions = runtime.decisionRepo.list({});
+        return buildAttentionModel({
+            executions,
+            decisions,
+            events: attentionEvents(executions),
+            now,
+        });
+    }
+    const ruleCategory = ((map) => (ruleId) => map.get(ruleId))(new Map(DEFAULT_POLICY_RULES.map((r) => [r.id, r.category])));
+    /** A JSON-safe copy: no class instances, no undefined, no live references. */
+    function plain(value) {
+        return JSON.parse(JSON.stringify(value));
+    }
+    function attentionView() {
+        const now = nowFn();
+        const model = buildModel(now);
+        const items = model.items.map((c) => {
+            const lang = dispositionLanguage(c.disposition);
+            return {
+                ...plain(c),
+                facts: priorityFacts(c, now),
+                section: lang.section,
+                label: lang.label,
+                verb: lang.verb,
+            };
+        });
+        const delegations = runtime.delegations.list({ active: true, now }).map(plain);
+        const suggestions = runtime.delegations
+            .suggestions({ decisions: runtime.decisionRepo.list({}), ruleCategory })
+            .map(plain);
+        return {
+            model: {
+                generatedAt: model.generatedAt,
+                map: plain(model.map),
+                items,
+                budgetDemoted: [...model.budgetDemoted],
+            },
+            delegations,
+            suggestions,
+        };
+    }
+    /** Cheap map for /api/state — computed once per call, reused by the queue. */
+    function attentionState(model) {
+        return {
+            load: { level: model.map.load.level, reasons: [...model.map.load.reasons] },
+            needsYou: model.map.needsYou,
+            waiting: model.map.waiting,
+            watching: model.map.watching,
+            working: model.map.working,
+            agents: model.map.agents,
+        };
+    }
+    function stateView() {
+        const model = options.attention === false ? null : buildModel();
+        const executions = runtime.execRepo.list({});
+        const pendings = pendingByExec();
+        const cards = executions.map((e) => cardFor(e, pendings.get(e.id) ?? []));
+        const active = cards.filter((c) => !['COMPLETED', 'FAILED', 'CANCELLED'].includes(c.status));
+        const needsYou = cards.filter((c) => c.needsYou);
+        const totals = active.reduce((acc, c) => {
+            acc.totalMs += c.metrics.totalMs;
+            acc.humanMs += c.metrics.heldMs + c.metrics.humanControlMs;
+            return acc;
+        }, { totalMs: 0, humanMs: 0 });
+        const allDecisions = runtime.decisionRepo.list({});
+        return {
+            now: nowFn(),
+            executions: cards,
+            attention: {
+                // P9 keys stay field-compatible; when derived, the same keys answer
+                // in attention-map terms (sections, not card heuristics).
+                working: model ? model.map.working : active.length,
+                needsYou: model ? model.map.needsYou : needsYou.length,
+                pendingDecisions: allDecisions.filter((d) => d.status === 'pending').length,
+                totalMs: totals.totalMs,
+                humanMs: totals.humanMs,
+                autonomousMs: Math.max(0, totals.totalMs - totals.humanMs),
+                attentionRatio: totals.totalMs > 0 ? totals.humanMs / totals.totalMs : 0,
+                ...(model ? attentionState(model) : {}),
+            },
+            queue: allDecisions
+                .slice()
+                .sort((a, b) => (a.status === 'pending' ? -1 : 1) - (b.status === 'pending' ? -1 : 1) || decisionPriority(b) - decisionPriority(a))
+                .slice(0, 60)
+                .map((d) => decisionView(d, executions.find((e) => e.id === d.executionId)?.goal ?? d.executionId)),
+            quality: rollupDecisionQuality(allDecisions),
+        };
+    }
+    /** One honest line naming what an event let happen. */
+    function describeEvent(e) {
+        const p = e.payload;
+        const args = p.arguments ?? {};
+        const command = p.command ?? args.command;
+        if (typeof command === 'string' && command !== '') {
+            return command.length > 80 ? `ran \`${command.slice(0, 80)}…\`` : `ran \`${command}\``;
+        }
+        if (p.testName)
+            return `test \`${String(p.testName)}\``;
+        if (p.toolName)
+            return `used tool \`${String(p.toolName)}\``;
+        return e.type;
+    }
+    function jsonDelegation(d) {
+        return {
+            id: d.id,
+            scope: d.scope,
+            executionId: d.executionId,
+            category: d.category,
+            resourcePattern: d.resourcePattern,
+            authority: d.authority,
+            origin: d.origin,
+            grantedBy: d.grantedBy,
+            grantedAt: d.grantedAt,
+            expiresAt: d.expiresAt,
+            revokedAt: d.revokedAt,
+            revokedBy: d.revokedBy,
+            ...(d.note !== undefined ? { note: d.note } : {}),
+        };
+    }
+    function detailView(execId) {
+        const exec = runtime.execRepo.findById(execId);
+        if (!exec)
+            throw new Error(`execution not found: ${execId}`);
+        const all = runtime.decisionRepo.list({ executionId: execId });
+        const pending = all.filter((d) => d.status === 'pending');
+        const card = cardFor(exec, pending);
+        const events = runtime.eventRepo.listByExecution(execId, { limit: 500 });
+        const takeovers = runtime.takeoverRepo.listByExecution(execId);
+        // P10: recent actions that ran WITHOUT interrupting, each explained from
+        // persisted facts; for delegated rows, resolve the covering delegation.
+        const autonomous = autonomousHighlights(events, { limit: 5 })
+            .slice()
+            .reverse()
+            .map((e) => {
+            const delegationId = e.payload.delegationId;
+            const delegation = e.type === 'policy.delegated' && typeof delegationId === 'string'
+                ? runtime.delegationRepo.findById(delegationId)
+                : null;
+            return {
+                event: describeEvent(e),
+                type: e.type,
+                at: e.timestamp,
+                whyNotInterrupted: explainNonInterruption(e, {
+                    policy: runtime.manager.policyEngine,
+                    delegation,
+                }),
+            };
+        });
+        const activeDelegations = runtime.delegationRepo
+            .listActive(nowFn(), execId)
+            .map(jsonDelegation);
+        let away;
+        const lastAway = [...events].reverse().find((e) => e.type === 'human.intervention' && e.payload.action === 'mark_away');
+        if (lastAway) {
+            const summary = buildAwaySummary({
+                execution: exec,
+                events,
+                decisions: all,
+                since: lastAway.timestamp,
+                now: nowFn(),
+            });
+            away = { ...summary, rendered: renderAway(summary) };
+        }
+        return {
+            ...card,
+            timeline: condenseTimeline(events, all, { limit: 80 }),
+            decisions: all
+                .slice()
+                .sort((a, b) => b.createdAt - a.createdAt)
+                .slice(0, 25)
+                .map((d) => decisionView(d, exec.goal)),
+            ...(away ? { away } : {}),
+            interventions: exec.interventions.slice(-15),
+            constraints: exec.constraints,
+            workspace: exec.workspace,
+            completedWork: exec.completedWork.slice(-10),
+            risks: exec.risks,
+            qualityRollup: rollupDecisionQuality(all),
+            autonomous,
+            delegations: activeDelegations,
+        };
+    }
+    function renderAway(s) {
+        // server-side canonical text so CLI/web speak with one voice
+        const lines = [];
+        if (s.needsYou) {
+            lines.push('NEEDS YOUR ATTENTION');
+            for (const d of s.decisionsRequired)
+                lines.push(`  - decision: ${d.title}`);
+            for (const f of s.failures.slice(0, 3))
+                lines.push(`  - failure: ${f}`);
+        }
+        lines.push(`Since you left: ${String(s.completedWork.length)} steps done` +
+            (s.significantChanges.length > 0 ? `, ${String(s.significantChanges.length)} significant change(s)` : '') +
+            `, ${String(s.decisionsResolved.length)} decision(s) answered`);
+        lines.push(`Next: ${s.recommendedNextAction}`);
+        lines.push(`Your attention so far: ${String(s.humanAttentionMinutes)} min`);
+        return lines.join('\n');
+    }
+    // ── HTTP plumbing ──
+    const json = (res, code, body) => {
+        const buf = Buffer.from(JSON.stringify(body));
+        res.writeHead(code, {
+            'content-type': 'application/json',
+            'content-length': String(buf.length),
+            'cache-control': 'no-store',
+            'access-control-allow-origin': '*',
+        });
+        res.end(buf);
+    };
+    const MIME = {
+        '.html': 'text/html; charset=utf-8',
+        '.js': 'text/javascript; charset=utf-8',
+        '.css': 'text/css; charset=utf-8',
+        '.svg': 'image/svg+xml',
+        '.ico': 'image/x-icon',
+    };
+    async function serveStatic(res, path) {
+        const rel = path === '/' ? 'index.html' : path.slice(1);
+        if (rel.includes('..'))
+            return json(res, 400, { error: 'bad path' });
+        const file = join(publicDir, rel);
+        try {
+            const data = await readFile(file);
+            res.writeHead(200, {
+                'content-type': MIME[extname(file)] ?? 'application/octet-stream',
+                'content-length': String(data.length),
+                'cache-control': 'no-cache',
+            });
+            res.end(data);
+        }
+        catch {
+            json(res, 404, { error: 'not found' });
+        }
+    }
+    function readBody(req) {
+        return new Promise((resolve, reject) => {
+            let size = 0;
+            const chunks = [];
+            req.on('data', (c) => {
+                size += c.length;
+                if (size > 64_000)
+                    return reject(new Error('body too large'));
+                chunks.push(c);
+            });
+            req.on('end', () => {
+                if (chunks.length === 0)
+                    return resolve({});
+                try {
+                    resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+                }
+                catch (err) {
+                    reject(err);
+                }
+            });
+            req.on('error', reject);
+        });
+    }
+    const server = createServer(async (req, res) => {
+        const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+        const path = url.pathname;
+        try {
+            if (path === '/api/state' && req.method === 'GET')
+                return json(res, 200, stateView());
+            if (path === '/api/attention' && req.method === 'GET')
+                return json(res, 200, attentionView());
+            if (path === '/api/delegate' && req.method === 'POST') {
+                const body = await readBody(req);
+                const scope = body.scope === 'execution' ? 'execution' : body.scope === 'workspace' ? 'workspace' : null;
+                if (!scope)
+                    return json(res, 400, { error: "scope must be 'execution' | 'workspace'" });
+                const category = String(body.category ?? '');
+                if (!DELEGABLE_CATEGORIES.has(category)) {
+                    return json(res, 400, { error: `unknown category: ${category || '(missing)'}` });
+                }
+                const delegation = runtime.delegations.grant({
+                    scope,
+                    category: category,
+                    ...(typeof body.resourcePattern === 'string' && body.resourcePattern !== ''
+                        ? { resourcePattern: body.resourcePattern }
+                        : {}),
+                    ...(typeof body.executionId === 'string' && body.executionId !== ''
+                        ? { executionId: body.executionId }
+                        : {}),
+                    grantedBy: typeof body.grantedBy === 'string' && body.grantedBy !== '' ? body.grantedBy : 'developer',
+                    ...(typeof body.ttlMs === 'number' && body.ttlMs > 0 ? { ttlMs: body.ttlMs } : {}),
+                    ...(typeof body.note === 'string' && body.note !== '' ? { note: body.note } : {}),
+                }, nowFn());
+                return json(res, 200, { ok: true, delegation: jsonDelegation(delegation) });
+            }
+            if (path === '/api/delegations' && req.method === 'GET') {
+                const now = nowFn();
+                const showAll = url.searchParams.get('all') != null;
+                const list = showAll
+                    ? runtime.delegations.list({ now })
+                    : runtime.delegations.list({ active: true, now });
+                return json(res, 200, {
+                    delegations: list.map((d) => ({
+                        ...jsonDelegation(d),
+                        active: d.revokedAt == null && (d.expiresAt == null || d.expiresAt > now),
+                    })),
+                });
+            }
+            const revokeDl = /^\/api\/delegations\/([^/]+)\/revoke$/.exec(path);
+            if (revokeDl && req.method === 'POST') {
+                const body = await readBody(req);
+                const by = typeof body.by === 'string' && body.by !== '' ? body.by : 'developer';
+                const d = runtime.delegations.revoke(decodeURIComponent(revokeDl[1]), by, nowFn());
+                return json(res, 200, { ok: true, delegation: jsonDelegation(d) });
+            }
+            if (path === '/stream' && req.method === 'GET') {
+                res.writeHead(200, {
+                    'content-type': 'text/event-stream',
+                    'cache-control': 'no-cache, must-revalidate',
+                    connection: 'keep-alive',
+                    'access-control-allow-origin': '*',
+                });
+                res.write('retry: 1500\n\n');
+                res.write(`data: ${JSON.stringify({ type: 'hello', now: nowFn() })}\n\n`);
+                streams.add(res);
+                req.on('close', () => streams.delete(res));
+                return undefined;
+            }
+            const detail = /^\/api\/executions\/([^/]+)$/.exec(path);
+            if (detail && req.method === 'GET')
+                return json(res, 200, detailView(decodeURIComponent(detail[1])));
+            const resolve_ = /^\/api\/decisions\/([^/]+)\/resolve$/.exec(path);
+            if (resolve_ && req.method === 'POST') {
+                const body = await readBody(req);
+                const outcome = String(body.outcome ?? '');
+                if (outcome !== 'accepted' && outcome !== 'rejected' && outcome !== 'custom') {
+                    return json(res, 400, { error: "outcome must be 'accepted' | 'rejected' | 'custom'" });
+                }
+                const d = runtime.decisions.resolve(decodeURIComponent(resolve_[1]), outcome, {
+                    ...(typeof body.answerBy === 'string' ? { answerBy: body.answerBy } : {}),
+                    ...(typeof body.selectedOptionId === 'string' ? { selectedOptionId: body.selectedOptionId } : {}),
+                    ...(typeof body.customValue === 'string' ? { customValue: body.customValue } : {}),
+                    ...(typeof body.feedback === 'string' ? { feedback: body.feedback } : {}),
+                });
+                return json(res, 200, { id: d.id, status: d.status });
+            }
+            const present = /^\/api\/decisions\/([^/]+)\/present$/.exec(path);
+            if (present && req.method === 'POST') {
+                runtime.decisions.present(decodeURIComponent(present[1]));
+                return json(res, 200, { ok: true });
+            }
+            const takeOver = /^\/api\/executions\/([^/]+)\/take-over$/.exec(path);
+            if (takeOver && req.method === 'POST') {
+                const body = await readBody(req);
+                const r = runtime.takeover.takeOver(decodeURIComponent(takeOver[1]), {
+                    ...(typeof body.actor === 'string' ? { actor: body.actor } : {}),
+                    ...(typeof body.notes === 'string' ? { notes: body.notes } : {}),
+                });
+                return json(res, 200, { ok: true, takeoverId: r.record?.id ?? null, brief: r.brief.length > 2000 ? `${r.brief.slice(0, 2000)}…` : r.brief });
+            }
+            const giveBack = /^\/api\/executions\/([^/]+)\/continue$/.exec(path);
+            if (giveBack && req.method === 'POST') {
+                const body = await readBody(req);
+                const r = runtime.takeover.continue(decodeURIComponent(giveBack[1]), {
+                    ...(typeof body.actor === 'string' ? { actor: body.actor } : {}),
+                    ...(typeof body.notes === 'string' ? { notes: body.notes } : {}),
+                });
+                return json(res, 200, { ok: true, status: r.execution.status, modifications: r.modifications });
+            }
+            const away = /^\/api\/executions\/([^/]+)\/away$/.exec(path);
+            if (away && req.method === 'POST') {
+                const body = await readBody(req);
+                const since = runtime.manager.markAway(decodeURIComponent(away[1]), typeof body.actor === 'string' ? body.actor : 'developer');
+                return json(res, 200, { ok: true, since });
+            }
+            if (path === '/favicon.ico')
+                return json(res, 404, { error: 'none' });
+            if (!path.startsWith('/api/') && !path.startsWith('/stream')) {
+                return await serveStatic(res, path);
+            }
+            return json(res, 404, { error: 'unknown endpoint' });
+        }
+        catch (err) {
+            return json(res, 400, { error: err instanceof Error ? err.message : String(err) });
+        }
+    });
+    // ── change propagation: slow cross-process poll + instant in-process nudge ──
+    const poller = setInterval(() => {
+        if (closed || streams.size === 0)
+            return;
+        const fp = fingerprint();
+        if (fp !== lastFingerprint) {
+            lastFingerprint = fp;
+            broadcast({ type: 'changed', now: nowFn() });
+        }
+    }, pollMs);
+    poller.unref();
+    const heartbeat = setInterval(() => {
+        for (const res of streams) {
+            try {
+                res.write(': ping\n\n');
+            }
+            catch {
+                streams.delete(res);
+            }
+        }
+    }, 15_000);
+    heartbeat.unref();
+    const unsubscribe = runtime.manager.subscribe(() => {
+        const fp = fingerprint();
+        if (fp !== lastFingerprint && streams.size > 0) {
+            lastFingerprint = fp;
+            broadcast({ type: 'changed', now: nowFn() });
+        }
+    });
+    await new Promise((resolve) => server.listen(options.port ?? 8717, host, resolve));
+    const addr = server.address();
+    const port = typeof addr === 'object' && addr !== null ? addr.port : (options.port ?? 8717);
+    return {
+        url: `http://${host}:${String(port)}`,
+        port,
+        async close() {
+            closed = true;
+            clearInterval(poller);
+            clearInterval(heartbeat);
+            unsubscribe();
+            for (const res of streams)
+                res.end();
+            streams.clear();
+            await new Promise((resolve) => server.close(() => resolve()));
+            if (ownRuntime)
+                runtime.db.close();
+        },
+    };
+}
+//# sourceMappingURL=server.js.map

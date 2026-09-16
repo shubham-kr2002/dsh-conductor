@@ -1,0 +1,47 @@
+/**
+ * Away Mode
+ *
+ * Generates a return-from-absence summary optimized for the developer's
+ * attention budget: what happened, what needs them, and what to do next —
+ * a decision-oriented brief, not a transcript.
+ */
+import type { Execution } from '../domain/execution.js';
+import type { ConductorEvent } from '../types/event.js';
+import type { ConductorDecision } from '../types/decision.js';
+export interface AwaySummary {
+    executionId: string;
+    goal: string;
+    status: string;
+    generatedAt: number;
+    awaySince: number;
+    humanAttentionMinutes: number;
+    completedWork: string[];
+    failures: string[];
+    significantChanges: string[];
+    decisionsRequired: Array<{
+        id: string;
+        title: string;
+        urgency: string;
+        impact: string;
+    }>;
+    decisionsResolved: Array<{
+        id: string;
+        title: string;
+        status: string;
+    }>;
+    risks: string[];
+    recommendedNextAction: string;
+    needsYou: boolean;
+}
+export interface AwaySummaryInput {
+    execution: Execution;
+    events: ConductorEvent[];
+    decisions: ConductorDecision[];
+    /** Timestamp the developer went away (defaults to execution start). */
+    since?: number;
+    /** Wall-clock now, injectable for deterministic tests. */
+    now?: number;
+}
+export declare function buildAwaySummary(input: AwaySummaryInput): AwaySummary;
+export declare function renderAwaySummary(s: AwaySummary): string;
+//# sourceMappingURL=away-mode.d.ts.map

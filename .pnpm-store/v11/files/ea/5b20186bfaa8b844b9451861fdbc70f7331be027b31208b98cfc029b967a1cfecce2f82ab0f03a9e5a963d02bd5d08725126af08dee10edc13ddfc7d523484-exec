@@ -1,0 +1,62 @@
+/**
+ * Takeover Service
+ *
+ * The "Take Over" and "Continue" flows: freeze execution + capture the
+ * observable workspace state + produce a continuation brief for the human;
+ * then, on continue, detect what the human modified, reconcile it into the
+ * execution state, and regenerate the brief for the agent.
+ */
+import type { Execution } from '../domain/execution.js';
+import type { IExecutionRepository } from '../storage/execution-repository.js';
+import type { IEventRepository } from '../storage/event-repository.js';
+import type { IDecisionRepository } from '../storage/decision-repository.js';
+import type { ITakeoverRepository, TakeoverRecord } from '../storage/takeover-repository.js';
+import { type GitRunner, type WorkspaceDiff } from './workspace-snapshot.js';
+import { type ContinuationContext } from './continuation-context.js';
+export interface TakeoverResult {
+    execution: Execution;
+    record: TakeoverRecord | null;
+    context: ContinuationContext;
+    brief: string;
+}
+export interface ContinueResult extends TakeoverResult {
+    modifications: WorkspaceDiff;
+}
+export interface TakeoverServiceDeps {
+    executionRepo: IExecutionRepository;
+    eventRepo: IEventRepository;
+    decisionRepo: IDecisionRepository;
+    takeoverRepo: ITakeoverRepository;
+    /** Override the git integration (e.g. in tests or sandboxes). */
+    git?: GitRunner;
+}
+export declare class TakeoverService {
+    private readonly deps;
+    private readonly git;
+    constructor(deps: TakeoverServiceDeps);
+    /**
+     * Freeze an execution, capture workspace state, and produce a
+     * continuation context brief that the human can edit before continuing.
+     */
+    takeOver(executionId: string, opts?: {
+        actor?: string;
+        notes?: string;
+    }): TakeoverResult;
+    /**
+     * Return control to the agent: detect the human's workspace edits,
+     * reconcile them into the execution state, and regenerate the brief.
+     * BLOCKED executions require an explicit decision first, not takeover.
+     */
+    continue(executionId: string, opts?: {
+        actor?: string;
+        notes?: string;
+    }): ContinueResult;
+    /** Read the latest continuation context for a taken-over execution. */
+    currentBrief(executionId: string): {
+        context: ContinuationContext;
+        brief: string;
+    } | null;
+    private getExecution;
+    private interventionEvent;
+}
+//# sourceMappingURL=takeover-service.d.ts.map

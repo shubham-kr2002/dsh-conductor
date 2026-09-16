@@ -1,0 +1,106 @@
+/**
+ * Execution Manager
+ *
+ * Coordinates execution lifecycle, event processing, persistence, and state synchronization.
+ */
+import { Execution, type CreateExecutionOptions } from '../domain/execution.js';
+import type { IExecutionRepository } from '../storage/execution-repository.js';
+import type { IEventRepository } from '../storage/event-repository.js';
+import type { ConductorEvent } from '../types/event.js';
+import type { ExecutionStatus } from '../types/execution.js';
+import { PolicyEngine } from '../policy/policy-engine.js';
+import { AttentionEngine } from '../attention/attention-engine.js';
+import type { DecisionQueue } from '../decision/decision-queue.js';
+import type { AttentionClassification } from '../types/attention.js';
+import { type AwaySummary } from '../summary/away-mode.js';
+export interface ExecutionStatusSummary {
+    executionId: string;
+    goal: string;
+    status: ExecutionStatus;
+    currentPhase: string;
+    progressSummary: string;
+    durationSeconds: number;
+    toolCallCount: number;
+    filesModifiedCount: number;
+    pendingDecisionsCount: number;
+    risksCount: number;
+    completedWorkCount: number;
+    updatedAt: number;
+    pendingAttention: PendingAttentionItem[];
+    attentionRequired: boolean;
+}
+export interface PendingAttentionItem {
+    eventId: string;
+    type: string;
+    level: 'DECISION' | 'CRITICAL';
+    action: string;
+    rationale: string;
+    timestamp: number;
+}
+export declare class ExecutionManager {
+    readonly executionRepo: IExecutionRepository;
+    readonly eventRepo: IEventRepository;
+    readonly policyEngine: PolicyEngine;
+    readonly attentionEngine: AttentionEngine;
+    private _activeExecutionId?;
+    private readonly _subscribers;
+    private readonly _attentionContexts;
+    private readonly _awayMarks;
+    decisions?: DecisionQueue;
+    /** When true, PAUSE classifications transition the execution to PAUSED. */
+    enforceAttention: boolean;
+    /**
+     * Optional human-delegation authority. When a standing delegation covers
+     * a require_approval action, the event is RECORDED (with immutable
+     * `policy.delegated` forensics) instead of interrupting the developer.
+     * Explicit current denials shadow delegations (DelegationService).
+     */
+    delegations?: import('../delegation/delegation-service.js').DelegationService;
+    constructor(executionRepo: IExecutionRepository, eventRepo: IEventRepository, policyEngine?: PolicyEngine, attentionEngine?: AttentionEngine, decisions?: DecisionQueue);
+    private attentionContext;
+    get activeExecutionId(): string | undefined;
+    subscribe(handler: (event: ConductorEvent) => void): () => void;
+    private notify;
+    createExecution(options: CreateExecutionOptions): Execution;
+    getExecution(executionId: string): Execution;
+    getActiveExecution(): Execution | null;
+    /**
+     * Ingest and process a ConductorEvent:
+     * classify through policy + attention, persist, mutate execution state,
+     * then enforce the attention action (pause for PAUSE classifications).
+     */
+    processEvent(event: ConductorEvent): AttentionClassification | null;
+    /** Delegation authority check for a PAUSE-worthy tool/command event. */
+    private delegationCover;
+    /** Map an event to attention-engine input using execution state + policy engine. */
+    private deriveAttentionInput;
+    /** Heuristic task alignment: paths within the workspace root or goal keywords. */
+    private isTaskAligned;
+    /** Enforce the attention action on execution lifecycle. */
+    private applyAttentionAction;
+    /** Build the developer-facing decision for a paused classification. */
+    private decisionInputFromEvent;
+    /** Structured interruption explanation, from real pipeline inputs only. */
+    private buildWhy;
+    private applyEventToExecution;
+    getStatus(executionId?: string): ExecutionStatusSummary;
+    /**
+     * Scan persisted event classifications for unresolved DECISION/CRITICAL items.
+     * An item counts as pending when it is not older than the execution's last
+     * resume/continue transition.
+     */
+    getPendingAttention(executionId?: string): PendingAttentionItem[];
+    getHistory(executionId?: string, options?: {
+        limit?: number;
+        offset?: number;
+    }): ConductorEvent[];
+    /** Mark "the developer stepped away" — persisted as a human-sourced event. */
+    markAway(executionId?: string, actor?: string): number;
+    /**
+     * Build the "while you were away" summary. The window starts at the last
+     * explicit away-mark (persisted), else at the last human resume/continue,
+     * else at execution start.
+     */
+    getAwaySummary(executionId?: string, now?: number): AwaySummary;
+}
+//# sourceMappingURL=execution-manager.d.ts.map

@@ -1,0 +1,38 @@
+/**
+ * Handoff Repository
+ *
+ * Persists structured handoff state so one agent can resume an execution
+ * with the other agent's full, transcript-free context.
+ */
+export class SqliteHandoffRepository {
+    db;
+    constructor(db) {
+        this.db = db;
+    }
+    save(handoff) {
+        this.db.raw
+            .prepare(`INSERT INTO handoffs (id, execution_id, from_agent_id, to_agent_id, state_json, timestamp)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           to_agent_id = excluded.to_agent_id,
+           state_json = excluded.state_json,
+           timestamp = excluded.timestamp`)
+            .run(handoff.handoffId, handoff.executionId, handoff.fromAgentId, handoff.toAgentId ?? null, JSON.stringify(handoff), handoff.timestamp);
+    }
+    findById(id) {
+        const stmt = this.db.raw.prepare('SELECT * FROM handoffs WHERE id = ?');
+        const row = stmt.get(id);
+        return row ? JSON.parse(row.state_json) : null;
+    }
+    listByExecution(executionId) {
+        const stmt = this.db.raw.prepare('SELECT * FROM handoffs WHERE execution_id = ? ORDER BY timestamp DESC');
+        const rows = stmt.all(executionId);
+        return rows.map((r) => JSON.parse(r.state_json));
+    }
+    latestForExecution(executionId) {
+        const stmt = this.db.raw.prepare('SELECT * FROM handoffs WHERE execution_id = ? ORDER BY timestamp DESC LIMIT 1');
+        const row = stmt.get(executionId);
+        return row ? JSON.parse(row.state_json) : null;
+    }
+}
+//# sourceMappingURL=handoff-repository.js.map

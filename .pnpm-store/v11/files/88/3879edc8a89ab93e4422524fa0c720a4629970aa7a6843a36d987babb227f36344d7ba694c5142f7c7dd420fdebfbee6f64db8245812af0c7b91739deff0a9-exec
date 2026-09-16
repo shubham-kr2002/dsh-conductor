@@ -1,0 +1,13 @@
+/**
+ * Attention candidates
+ *
+ * The canonical internal representation of "something that may deserve
+ * human attention". Candidates are DERIVED views over durable rows
+ * (executions, decisions, events) — never a second source of truth. Any
+ * value that cannot be deterministically derived is explicitly null,
+ * never fabricated.
+ */
+export function candidateAge(c, now) {
+    return Math.max(0, now - c.createdAt);
+}
+//# sourceMappingURL=attention-candidate.js.map
