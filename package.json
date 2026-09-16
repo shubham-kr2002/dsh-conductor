@@ -2,7 +2,7 @@
   "name": "dsh-conductor",
   "version": "0.1.0",
   "description": "Human-control layer for autonomous coding agents in DeepSeek Harness",
-  "main": "./dist/src/index.js",
+  "main": "./dist/src/dsh/bundle-entry.js",
   "types": "./dist/src/index.d.ts",
   "bin": {
     "conductor": "./dist/src/cli/bin.js",
@@ -13,7 +13,9 @@
     "build": "tsc && node scripts/copy-ui-assets.mjs",
     "typecheck": "tsc --noEmit",
     "test": "tsc && node scripts/copy-ui-assets.mjs && node --test 'dist/tests/**/*.test.js'",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "validate:package": "node scripts/validate-package.mjs",
+    "prepack": "pnpm build && node scripts/validate-package.mjs"
   },
   "keywords": [
     "dsh",
@@ -30,5 +32,32 @@
   },
   "dependencies": {
     "commander": "^15.0.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/src/dsh/bundle-entry.d.ts",
+      "default": "./dist/src/dsh/bundle-entry.js"
+    },
+    "./core": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    },
+    "./bundle": {
+      "types": "./dist/src/dsh/bundle-entry.d.ts",
+      "default": "./dist/src/dsh/bundle-entry.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist/src",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
   }
 }
