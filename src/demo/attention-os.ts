@@ -1,0 +1,944 @@
+/**
+ * Phase 10 — "Attention OS" deterministic fleet demo.
+ *
+ * Where the Part 19 demo proved one agent's day, this drives the REAL
+ * multi-agent pipeline (EventAdapter → ExecutionManager.processEvent →
+ * PolicyEngine/AttentionEngine → DecisionQueue → DelegationService →
+ * buildAttentionModel) through a scripted 50-minute fleet story with
+ * five agents — atlas (payments migration), hera (api refactor),
+ * nova (docs sweep), orion (test coverage), vesta (lint cleanup) — and
+ * prints the §20 return-to-work block. Every number on the screen is a
+ * derivation over persisted rows: the interruption budget, batching,
+ * delegation forensics, take-over accounting and the attention ratio
+ * are all recomputed from the database, never hardcoded.
+ *
+ * Story beats (fictional clock shown for a 50-minute story; like P9 the
+ * real run happens in milliseconds and persisted rows are shifted onto
+ * the fictional schedule AFTER the fact via `shiftSchedule` /
+ * `rescheduleDecision`, with events pre-stamped at emit time):
+ *   1. Five executions start and do routine autonomous work (BACKGROUND).
+ *   2. NOISE STORM on orion — 3 test.failed + 1 command-failed +
+ *      2 file.changed: ZERO decisions are created (self-heal; failure
+ *      streaks only NOTIFY), while the fleet model yields ONE failure
+ *      cluster grouping the storm. "storm absorbed".
+ *   3. atlas asks a high-consequence production question → MAJOR
+ *      decision, atlas PAUSED, holds the single needs-you slot.
+ *   4. vesta `pnpm add zod` → major decision → the budget demotes it to
+ *      'queue' (durable, with its whyWaiting) — "queued, not interrupted".
+ *   5. vesta's decision is answered approve-once; a workspace
+ *      dependencies delegation (origin recurrence-offer) is granted;
+ *      hera's `pnpm add lodash` then runs COVERED: policy.delegated
+ *      forensics, zero decisions, one observation in the model —
+ *      "ran under your delegation" + explainNonInterruption bullets.
+ *   6. nova `git push --force` → CRITICAL decision: budget-immune, it
+ *      leads, and atlas's pending question is demoted to 'waiting'.
+ *   7. Developer takes over nova, edits docs/ROLLBACK.md, returns
+ *      control, and rejects the force-push decision personally.
+ *   8. Away-mark at minute 10; quiet autonomous stretch; atlas answers
+ *      its question custom, then nova/vesta/hera/atlas complete; orion
+ *      gates `helm uninstall ns demo` AFTER its away-mark and stays
+ *      pending — the one thing that heads the return-to-work brief.
+ *   9. Return, final fleet model + metrics + decision-quality rollup →
+ *      RETURN TO WORK (§20) with the "While you were away:" headline,
+ *      the attention-ratio line and the presentation-only budget tally.
+ *
+ * The demo is SELF-VERIFYING: every beat asserts its invariant with a
+ * thrown Error, so `conductor demo-os` (parent wiring, later) can never
+ * silently print a dishonest screen.
+ */
+
+import { mkdirSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { EventAdapter } from '../adapter/event-adapter.js';
+import { buildAttentionModel, type AttentionMap, type AttentionModel } from '../attention/attention-orchestrator.js';
+import { dispositionLanguage } from '../attention/attention-priority.js';
+import { explainNonInterruption } from '../attention/non-interruption-why.js';
+import { Execution } from '../domain/execution.js';
+import { createRuntime } from '../cli/commands.js';
+import { deriveDecisionQuality, rollupDecisionQuality, type DecisionQualityRollup } from '../decision/decision-quality.js';
+import { computeAttentionMetrics, formatDuration } from '../summary/attention-metrics.js';
+import { buildAwaySummary, renderAwaySummary } from '../summary/away-mode.js';
+import { statusLanguage } from '../summary/status-language.js';
+import { condenseTimeline } from '../summary/timeline.js';
+import { DecisionSlot, MINUTE, rescheduleDecision } from './scenario.js';
+import type { AttentionClassification } from '../types/attention.js';
+import type { ConductorDecision, DecisionWhy } from '../types/decision.js';
+import type { ConductorEvent } from '../types/event.js';
+import type {
+  ExecutionState,
+  ExecutionStatus,
+  ExecutionTimestamps,
+  HumanInterventionRecord,
+  StateTransitionRecord,
+} from '../types/execution.js';
+
+export const ATTENTION_STORY_MINUTES = 50;
+
+/** The fictional fleet schedule — offsets in MINUTES from story base. */
+export const ATTENTION_STORY = {
+  agents: [
+    { id: 'atlas', goal: 'payments migration' },
+    { id: 'hera', goal: 'api refactor' },
+    { id: 'nova', goal: 'docs sweep' },
+    { id: 'orion', goal: 'test coverage' },
+    { id: 'vesta', goal: 'lint cleanup' },
+  ],
+  /** Lifecycle-transition offsets per agent (positional, like P9). */
+  transitionOffsetsMin: {
+    atlas: [0, 5, 8.5, 46.5], // start, pause (question), resume (custom answer), complete
+    hera: [0, 45.5], // start, complete — never held: delegation covered its gate
+    nova: [0, 7.2, 7.6, 8.1, 44.5], // start, pause (force push), take-over, return control, complete
+    orion: [0, 47.8], // start, pause (helm uninstall) — stays pending to end of story
+    vesta: [0, 6, 6.6, 45], // start, pause (pnpm add zod), resume (approve-once), complete
+  } as Record<string, number[]>,
+  /** Fictional clock slots for the four decisions the story produces. */
+  decisionSlots: {
+    atlas: { createdMin: 5, presentedMin: 5.25, resolvedMin: 8.5, updatedMin: 8.5 },
+    vesta: { createdMin: 6, presentedMin: 6.2, resolvedMin: 6.6, updatedMin: 6.7 },
+    nova: { createdMin: 7.2, presentedMin: 7.4, resolvedMin: 8.3, updatedMin: 8.3 },
+    orion: { createdMin: 47.8, presentedMin: 48.05, updatedMin: 48.05 },
+  } as Record<string, DecisionSlot>,
+  beats: {
+    storm: { fail1: 1.2, fail2: 1.6, fail3: 2, buildFail: 2.3, edit1: 2.6, edit2: 2.8 },
+    stormModelAt: 3.2,
+    atlasQuestion: 5,
+    atlasCheckAt: 5.4,
+    vestaGate: 6,
+    vestaCheckAt: 6.2,
+    vestaApproved: 6.6,
+    delegationGranted: 6.5,
+    heraDelegated: 6.8,
+    heraCheckAt: 7,
+    novaCritical: 7.2,
+    novaCheckAt: 7.4,
+    novaTakeOver: 7.6,
+    novaManualEdit: 8,
+    novaReturnControl: 8.1,
+    novaRejected: 8.3,
+    atlasAnswered: 8.5,
+    awayMark: 10,
+    helmGate: 47.8,
+    returnPresent: 49.5,
+  },
+  commands: {
+    vesta: 'pnpm add zod',
+    hera: 'pnpm add lodash',
+    nova: 'git push --force origin main',
+    orion: 'helm uninstall ns demo',
+  },
+} as const;
+
+export interface AttentionDemoOptions {
+  /** Workspace the fictional fleet operates in. Default cwd. */
+  workspaceRoot?: string;
+  /** SQLite file. Default `${workspaceRoot}/.conductor-demo/attention.db`. */
+  dbPath?: string;
+  /** Story "now" (end of the 50-minute story). Default Date.now(). */
+  now?: number;
+  /** Output sink. Defaults to console.log. Every line passes through. */
+  log?: (line: string) => void;
+}
+
+export interface AttentionDemoFacts {
+  storyMinutes: number;
+  agentsTotal: number;
+  /** Final fleet attention map (derived, not invented). */
+  map: AttentionMap & { items: number };
+  /** Beat 2 — the noise storm. */
+  stormEvents: number;
+  stormDecisions: number;
+  stormPauseActions: number;
+  stormLevels: string[];
+  stormClusters: number;
+  stormClusterMembers: number;
+  /** Beat 3 — atlas's production question. */
+  atlasDecisionImpact: string;
+  atlasDecisionUrgency: string;
+  atlasHoldsNeedsYou: boolean;
+  atlasStatusAfterQuestion: string;
+  /** Beat 4 — the budget demotes vesta's install. */
+  vestaDemoted: boolean;
+  vestaWhyWaiting: boolean;
+  vestaDecisionImpact: string;
+  /** Beat 5 — delegation carries hera's install. */
+  delegationGranted: number;
+  delegatedActions: number;
+  delegationForensics: number;
+  heraDecisions: number;
+  heraFinalDisposition: string;
+  /** Beat 6 — criticality is budget-immune. */
+  novaCriticalLeads: boolean;
+  atlasDemotedToWaiting: boolean;
+  /** Beat 7 — take-over. */
+  takeovers: number;
+  novaStatusAfterTakeover: string;
+  /** End state + attention accounting (all in ms of story clock). */
+  decisionsTotal: number;
+  decisionsResolved: number;
+  decisionsPending: number;
+  interruptionsTotal: number;
+  unsafeActions: number;
+  budgetDemotions: number;
+  budgetDemotionsResolved: number;
+  budgetSuppressedLost: number;
+  heldMs: number;
+  humanControlMs: number;
+  humanAttentionMs: number;
+  autonomousMs: number;
+  fleetTotalMs: number;
+  attentionRatio: number;
+  medianResponseMs: number | null;
+  recurrences: number;
+  outcomeCompletedAfter: number;
+  eventCount: number;
+  pendingTitle: string;
+  pendingAgent: string;
+  pendingImpact: string;
+  pendingUrgency: string;
+}
+
+export interface AttentionAgentMetrics {
+  status: ExecutionStatus;
+  totalMs: number;
+  heldMs: number;
+  humanControlMs: number;
+  autonomousMs: number;
+  interruptions: number;
+  decisions: number;
+  pending: number;
+  takeovers: number;
+  attentionRatio: number;
+}
+
+export interface AttentionDemoResult {
+  startedAt: number;
+  storyBaseAt: number;
+  storyEndAt: number;
+  dbPath: string;
+  /** Final attention map (buildAttentionModel over the persisted fleet). */
+  map: AttentionMap;
+  /** Final ordered cockpit items with their human sections. */
+  orderedItems: Array<{ id: string; agent: string; disposition: string; section: string }>;
+  /** Candidate ids the budget demoted at any checkpoint (presentation-only). */
+  budgetDemoted: string[];
+  delegatedActions: number;
+  batches: Array<{ agent: string; members: number }>;
+  takeover: {
+    agent: string;
+    actor: string;
+    decisionTitle: string;
+    manualFile: string;
+    tookOverAt: number;
+    returnedAt: number;
+  };
+  metrics: {
+    perAgent: Record<string, AttentionAgentMetrics>;
+    fleet: {
+      totalMs: number;
+      heldMs: number;
+      humanControlMs: number;
+      autonomousMs: number;
+      humanAttentionMs: number;
+      decisions: number;
+      takeovers: number;
+      interruptions: number;
+      attentionRatio: number;
+    };
+    quality: DecisionQualityRollup;
+  };
+  returnToWork: string[];
+  finalScreen: string[];
+  executionIds: Record<string, string>;
+  decisionIds: Record<string, string>;
+  delegationId: string;
+  facts: AttentionDemoFacts;
+}
+
+function invariant(beat: string, ok: boolean, message: string): void {
+  if (!ok) throw new Error(`Attention OS demo — beat "${beat}" invariant broken: ${message}`);
+}
+
+/**
+ * Pure: rewrite one execution's persisted timeline onto a fictional
+ * schedule starting at `base`, positionally like P9's `reschedule` but
+ * with a per-execution offset list. Throws if the transition count
+ * disagrees with the schedule (the demo is self-verifying).
+ */
+export function shiftSchedule(state: ExecutionState, offsetsMin: number[], base: number): ExecutionState {
+  invariant(
+    'shiftSchedule',
+    state.transitions.length === offsetsMin.length,
+    `${state.agent.id}: ${String(state.transitions.length)} transitions but ${String(offsetsMin.length)} schedule slots`,
+  );
+  const transitions: StateTransitionRecord[] = state.transitions.map((t, i) => ({
+    ...t,
+    timestamp: base + (offsetsMin[i] ?? 0) * MINUTE,
+  }));
+  const lastTs =
+    transitions.length > 0 ? (transitions[transitions.length - 1] as StateTransitionRecord).timestamp : base;
+  const timestamps: ExecutionTimestamps = {
+    createdAt: base,
+    ...(state.timestamps.startedAt != null ? { startedAt: base + (offsetsMin[0] ?? 0) * MINUTE } : {}),
+    updatedAt: lastTs,
+    ...(state.timestamps.completedAt != null ? { completedAt: lastTs } : {}),
+  };
+  const takeOverTs = transitions.find((t) => t.to === 'TAKEN_OVER')?.timestamp;
+  const returnTs =
+    takeOverTs != null
+      ? transitions.find((t) => t.to === 'RUNNING' && t.timestamp > takeOverTs)?.timestamp
+      : undefined;
+  const interventions: HumanInterventionRecord[] = state.interventions.map((iv) => {
+    if (iv.type === 'take_over' && takeOverTs != null) return { ...iv, timestamp: takeOverTs };
+    if (iv.type === 'continue' && returnTs != null) return { ...iv, timestamp: returnTs };
+    return { ...iv, timestamp: timestamps.createdAt };
+  });
+  const durationMs =
+    timestamps.startedAt != null ? Math.max(0, lastTs - timestamps.startedAt) : 0;
+  return { ...state, timestamps, transitions, interventions, metrics: { ...state.metrics, durationMs } };
+}
+
+const THREE_WHYS: (w: DecisionWhy) => string[] = (w) => [
+  `• WHAT — ${w.what}`,
+  `• WHY NOW — ${w.whyNow}`,
+  `• IMPACT — ${w.impact} · ${w.reversibility}${w.reversibilityNote ? ` — ${w.reversibilityNote}` : ''}`,
+];
+
+function eventLabel(e: ConductorEvent): string {
+  const p = e.payload as Record<string, unknown>;
+  const focus = p.command ?? p.filePath ?? p.toolName ?? p.testName ?? p.question ?? p.action ?? p.summary ?? p.goal ?? '';
+  const s = String(focus);
+  return s === '' ? e.type : `${e.type} — ${s.slice(0, 74)}`;
+}
+
+function minutesLabel(ms: number): string {
+  return `${(Math.round((ms / MINUTE) * 10) / 10).toFixed(1)} min`;
+}
+
+/**
+ * Run the scripted 50-minute fleet story against a real SQLite database
+ * (via `createRuntime`, which wires DelegationService into the manager)
+ * and return the fully derived Attention OS result.
+ */
+export async function runDemoAttention(opts: AttentionDemoOptions = {}): Promise<AttentionDemoResult> {
+  const startedAt = Date.now();
+  const log = opts.log ?? ((line: string): void => console.log(line));
+  const now = opts.now ?? Date.now();
+  const totalMs = ATTENTION_STORY_MINUTES * MINUTE;
+  const base = now - totalMs;
+  const workspaceRoot = resolve(opts.workspaceRoot ?? process.cwd());
+  const dbPath = opts.dbPath ?? join(workspaceRoot, '.conductor-demo', 'attention.db');
+  mkdirSync(workspaceRoot, { recursive: true }); // createRuntime's db makes its own dirname
+
+  const S = ATTENTION_STORY;
+  const B = S.beats;
+  const storyTs = (min: number): number => base + min * MINUTE;
+  const clock = (t: number): string => new Date(t).toISOString().slice(11, 16);
+
+  const rt = createRuntime(dbPath);
+  try {
+    const { manager, decisions, execRepo, eventRepo, decisionRepo, delegations } = rt;
+
+    const ids: Record<string, string> = {};
+    const agentOf = (execId: string): string =>
+      Object.keys(ids).find((k) => ids[k] === execId) ?? '—';
+
+    /** Feed pre-built events through the real pipeline on the fictional clock. */
+    const emit = (execId: string, evs: ConductorEvent[], min: number): AttentionClassification[] => {
+      const t = storyTs(min);
+      const out: AttentionClassification[] = [];
+      for (const e of evs) {
+        const cls = manager.processEvent({ ...e, timestamp: t });
+        if (cls) out.push(cls);
+        log(`  ${clock(t)} · ${agentOf(execId)} · ${eventLabel(e)}${cls ? `  [${cls.level}/${cls.action}]` : ''}`);
+      }
+      return out;
+    };
+    const gate = (execId: string, callId: string, command: string, min: number): AttentionClassification[] =>
+      emit(execId, EventAdapter.adaptToolCall(execId, { callId, name: 'bash', arguments: { command } }), min);
+    const allEvents = (): ConductorEvent[] =>
+      execRepo.list({}).flatMap((e) => eventRepo.listByExecution(e.id, { limit: 500 }));
+    const liveModel = (min: number): AttentionModel =>
+      buildAttentionModel({
+        executions: execRepo.list({}),
+        decisions: decisionRepo.list({}),
+        events: allEvents(),
+        now: storyTs(min),
+      });
+    const pendingFor = (execId: string): ConductorDecision[] => decisions.pending(execId);
+
+    log('=================================================================');
+    log(' CONDUCTOR · PHASE 10 — ATTENTION OS (deterministic fleet demo)');
+    log(` workspace ${workspaceRoot}`);
+    log(` sqlite    ${dbPath}`);
+    log(` story     ${clock(base)} → ${clock(now)} (${String(ATTENTION_STORY_MINUTES)} min)`);
+    log('=================================================================');
+
+    // ── Beat 1 · five agents pick up their tasks ─────────────────────
+    log('');
+    log('▶ beat 1 — five agents start; routine work stays in the background');
+    for (const a of S.agents) {
+      const exec = manager.createExecution({
+        goal: a.goal,
+        workspaceRoot,
+        agent: { id: a.id, provider: 'dsh', model: `${a.id}-1` },
+        initialPhase: 'execution',
+        constraints: ['no production mutations without a human'],
+      });
+      ids[a.id] = exec.id;
+      emit(
+        exec.id,
+        [EventAdapter.createEvent(exec.id, 'execution.started', { executionId: exec.id, goal: a.goal, workspaceRoot, agentId: a.id }, 'dsh')],
+        0,
+      );
+    }
+    // Routine autonomous background work for everyone.
+    emit(ids.atlas, EventAdapter.adaptToolCall(ids.atlas, { callId: 'at-read', name: 'read', arguments: { file_path: 'db/schema.sql' } }), 0.6);
+    emit(ids.atlas, EventAdapter.adaptToolCall(ids.atlas, { callId: 'at-edit', name: 'edit', arguments: { file_path: 'src/migrations/0043.sql' } }), 0.9);
+    emit(ids.hera, EventAdapter.adaptToolCall(ids.hera, { callId: 'he-read', name: 'grep', arguments: { pattern: 'handler' } }), 0.7);
+    emit(ids.hera, EventAdapter.adaptToolCall(ids.hera, { callId: 'he-edit', name: 'edit', arguments: { file_path: 'src/api/routes.ts' } }), 1.0);
+    emit(ids.nova, EventAdapter.adaptToolCall(ids.nova, { callId: 'nv-edit', name: 'write', arguments: { file_path: 'docs/README.md' } }), 0.8);
+    emit(ids.vesta, EventAdapter.adaptToolCall(ids.vesta, { callId: 'vs-edit', name: 'edit', arguments: { file_path: 'src/utils/date.ts' } }), 1.0);
+
+    // ── Beat 2 · noise storm on orion — absorbed, not escalated ──────
+    log('');
+    log('▶ beat 2 — NOISE STORM on orion: 3 test failures + 1 command failure + 2 file edits');
+    const decisionsBeforeStorm = decisionRepo.list({}).length;
+    const stormClassifications: AttentionClassification[] = [];
+    {
+      const storm = [
+        { callId: 'st-1', command: 'pnpm test', min: B.storm.fail1 },
+        { callId: 'st-2', command: 'node --test', min: B.storm.fail2 },
+        { callId: 'st-3', command: 'pnpm test', min: B.storm.fail3 },
+        { callId: 'st-4', command: 'pnpm run build', min: B.storm.buildFail },
+      ];
+      for (const s of storm) {
+        stormClassifications.push(...gate(ids.orion, s.callId, s.command, s.min));
+        stormClassifications.push(
+          ...emit(
+            ids.orion,
+            EventAdapter.adaptToolResult(
+              ids.orion,
+              { callId: s.callId, toolName: 'bash', isError: true, error: { name: 'CommandFailed', code: 'EXIT_1', message: 'coverage assertions failed' } },
+              { command: s.command },
+            ),
+            s.min + 0.15,
+          ),
+        );
+      }
+      emit(
+        ids.orion,
+        EventAdapter.adaptToolCall(ids.orion, { callId: 'st-e1', name: 'edit', arguments: { file_path: 'tests/coverage.test.ts' } }),
+        B.storm.edit1,
+      );
+      emit(
+        ids.orion,
+        EventAdapter.adaptToolCall(ids.orion, { callId: 'st-e2', name: 'write', arguments: { file_path: 'scripts/coverage-gate.mjs' } }),
+        B.storm.edit2,
+      );
+    }
+    const stormDecisions = decisionRepo.list({}).length - decisionsBeforeStorm;
+    const stormPauses = stormClassifications.filter((c) => c.action === 'PAUSE').length;
+    invariant('storm-zero-decisions', stormDecisions === 0, `noise storm created ${String(stormDecisions)} decisions, expected 0 (self-heal)`);
+    invariant('storm-no-pause', stormPauses === 0, `noise storm paused orion ${String(stormPauses)} times, expected 0`);
+
+    const stormModel = liveModel(B.stormModelAt);
+    const stormCandidates = stormModel.items.filter((c) => c.kind === 'observation' && c.category === 'failure-cluster');
+    invariant('storm-one-cluster', stormCandidates.length === 1, `expected exactly 1 failure cluster, got ${String(stormCandidates.length)}`);
+    const cluster = stormCandidates[0]!;
+    // Members: clustered ids when the batch path used them, otherwise the
+    // dedupe-folded forensic refs (buildAttentionModel dedupes identical
+    // observations BEFORE clustering, so members survive in refIds).
+    const clusterMembers = cluster.disposition === 'batch' ? cluster.clusterIds.length + 1 : cluster.refIds.length;
+    invariant('storm-clustered', clusterMembers >= 2, `failure cluster grouped only ${String(clusterMembers)} members, expected >= 2`);
+    invariant('storm-needs-you', stormModel.map.needsYou === 0, 'storm escalated to needs-you; it must stay batched');
+    log(`      storm absorbed: ${String(stormClassifications.length)} classifications · 0 decisions · 1 failure cluster (${String(clusterMembers)} failures grouped, ${String(cluster.refIds.length)} forensic rows kept)`);
+
+    // ── Beat 3 · atlas's production question holds the needs-you slot ─
+    log('');
+    log('▶ beat 3 — atlas hits a production-migration ambiguity and asks (consequence: high)');
+    emit(
+      ids.atlas,
+      EventAdapter.adaptToolCall(ids.atlas, {
+        callId: 'at-q1',
+        name: 'ask_user_question',
+        arguments: {
+          questions: [
+            {
+              question: 'Apply migration 0043 to prod now (locks the payments table ~30s) or dual-write behind a flag for a week?',
+              options: [
+                { label: 'Apply now', description: '30s write lock in a maintenance window' },
+                { label: 'Dual-write behind a flag', description: 'ship the flag, migrate traffic gradually' },
+              ],
+            },
+          ],
+          context: 'payments migration touches the live ledger; the goal forbids unreviewed prod downtime',
+          consequence: 'high',
+          recommendedOption: 'Dual-write behind a flag',
+        },
+      }),
+      B.atlasQuestion,
+    );
+    const atlasDecision = pendingFor(ids.atlas)[0];
+    invariant('atlas-decision', atlasDecision != null, 'agent.question produced no pending decision');
+    decisions.present(atlasDecision!.id);
+    invariant(
+      'atlas-major-high',
+      atlasDecision!.impact === 'major' && atlasDecision!.urgency === 'high',
+      `atlas question rated ${atlasDecision!.impact}/${atlasDecision!.urgency}, expected major/high`,
+    );
+    invariant('atlas-paused', execRepo.findById(ids.atlas)!.status === 'PAUSED', 'atlas is not PAUSED on its question');
+    const atlasModel = liveModel(B.atlasCheckAt);
+    invariant(
+      'atlas-needs-you',
+      atlasModel.map.needsYou === 1 && atlasModel.items[0]!.refIds.includes(atlasDecision!.id),
+      'atlas does not hold the single needs-you slot',
+    );
+    invariant('atlas-interrupt', atlasModel.items[0]!.disposition === 'interrupt', `atlas disposition ${atlasModel.items[0]!.disposition}`);
+    log(`      ⚑ ${atlasDecision!.title}  (${atlasDecision!.impact}/${atlasDecision!.urgency}) — atlas PAUSED, the ONE thing that needs you`);
+
+    // ── Beat 4 · the interruption budget queues vesta's install ──────
+    log('');
+    log(`▶ beat 4 — vesta reaches for \`${S.commands.vesta}\`: another major decision, but the budget has one seat`);
+    gate(ids.vesta, 'vs-g1', S.commands.vesta, B.vestaGate);
+    const vestaDecision = pendingFor(ids.vesta).find((d) => d.subject === `bash:${S.commands.vesta}`);
+    invariant('vesta-decision', vestaDecision != null, 'no pending decision for vesta install');
+    decisions.present(vestaDecision!.id);
+    invariant(
+      'vesta-impact',
+      vestaDecision!.impact === 'major' && vestaDecision!.urgency === 'high',
+      `vesta decision rated ${vestaDecision!.impact}/${vestaDecision!.urgency}`,
+    );
+    invariant('vesta-paused', execRepo.findById(ids.vesta)!.status === 'PAUSED', 'vesta is not PAUSED on its gate');
+    const vestaModel = liveModel(B.vestaCheckAt);
+    const vestaCand = vestaModel.items.find((c) => c.refIds.includes(vestaDecision!.id));
+    const atlasCand = vestaModel.items.find((c) => c.refIds.includes(atlasDecision!.id));
+    invariant('vesta-demoted', vestaCand?.disposition === 'queue', `vesta disposition ${String(vestaCand?.disposition)}, expected queue`);
+    invariant('vesta-why-waiting', Boolean(vestaCand?.whyWaiting), 'queue item without whyWaiting is invisible deferral');
+    invariant('vesta-in-budget-demoted', vestaModel.budgetDemoted.includes(vestaCand!.id), 'budget did not report the demotion');
+    invariant('atlas-still-leads', vestaModel.items[0]!.disposition === 'interrupt' && Boolean(atlasCand) && vestaModel.map.needsYou === 1, 'needs-you slot moved');
+    log(`      queued, not interrupted: ${vestaCand!.whyWaiting}`);
+    if (vestaDecision!.why) for (const b of THREE_WHYS(vestaDecision!.why)) log(`        ${b}`);
+
+    // ── Beat 5 · approve-once → delegation → hera runs unasked ───────
+    log('');
+    log('▶ beat 5 — you answer vesta once; the recurrence OFFER becomes a workspace delegation');
+    decisions.resolve(vestaDecision!.id, 'accepted', { selectedOptionId: 'approve-once', answerBy: 'shubham' });
+    invariant('vesta-resumed', execRepo.findById(ids.vesta)!.status === 'RUNNING', 'vesta did not resume after approval');
+    emit(
+      ids.vesta,
+      EventAdapter.adaptToolResult(ids.vesta, { callId: 'vs-g1', toolName: 'bash', isError: false }, { command: S.commands.vesta }),
+      B.vestaApproved + 0.15,
+    );
+    const grant = delegations.grant({
+      scope: 'workspace',
+      category: 'dependencies',
+      grantedBy: 'shubham',
+      origin: 'recurrence-offer',
+      note: 'recurrence offer accepted: dependency installs run autonomously',
+    });
+    invariant('delegation-granted', delegations.list({ active: true, now: Date.now() }).some((d) => d.id === grant.id), 'delegation not active');
+    const decisionsBeforeHera = decisionRepo.list({}).length;
+    gate(ids.hera, 'he-g1', S.commands.hera, B.heraDelegated);
+    emit(
+      ids.hera,
+      EventAdapter.adaptToolResult(ids.hera, { callId: 'he-g1', toolName: 'bash', isError: false }, { command: S.commands.hera }),
+      B.heraDelegated + 0.15,
+    );
+    emit(
+      ids.hera,
+      [EventAdapter.createEvent(ids.hera, 'file.changed', { filePath: 'package.json', action: 'modified' }, 'agent')],
+      B.heraDelegated + 0.25,
+    );
+    const heraDecisions = decisionRepo.list({}).length - decisionsBeforeHera;
+    const forensicEvents = allEvents().filter((e) => e.type === 'policy.delegated');
+    invariant('hera-no-decision', heraDecisions === 0, `covered install created ${String(heraDecisions)} decisions, expected 0`);
+    invariant('hera-never-held', execRepo.findById(ids.hera)!.status === 'RUNNING', 'hera was paused despite the delegation');
+    invariant('hera-forensics', forensicEvents.length >= 1, 'no policy.delegated forensics recorded');
+    const heraModel = liveModel(B.heraCheckAt);
+    const delegatedObs = heraModel.items.find((c) => c.category === 'delegated-activity');
+    invariant('hera-observation', delegatedObs != null, 'delegated action missing from the attention model');
+    log(`      ran under your delegation — here is why it didn't ask (${String(forensicEvents.length)} forensic rows, 0 decisions):`);
+    const whyNot = explainNonInterruption(forensicEvents[0]!, { policy: manager.policyEngine, delegation: grant });
+    for (const r of whyNot.allowedBecause) log(`        • ${r}`);
+    log(`        • attention saved: ${whyNot.attentionSaved}`);
+
+    // ── Beat 6 · nova's force-push: criticals own the front row ──────
+    log('');
+    log(`▶ beat 6 — nova wants \`${S.commands.nova}\`: CRITICAL — the budget cannot demote it`);
+    gate(ids.nova, 'nv-g1', S.commands.nova, B.novaCritical);
+    const novaDecision = pendingFor(ids.nova).find((d) => d.subject === `bash:${S.commands.nova}`);
+    invariant('nova-decision', novaDecision != null, 'no pending decision for the force push');
+    decisions.present(novaDecision!.id);
+    invariant('nova-critical', novaDecision!.impact === 'critical' && novaDecision!.urgency === 'critical', `force push rated ${novaDecision!.impact}/${novaDecision!.urgency}`);
+    const novaModel = liveModel(B.novaCheckAt);
+    invariant('nova-leads', novaModel.items[0]!.refIds.includes(novaDecision!.id) && novaModel.items[0]!.disposition === 'critical', 'critical does not lead the cockpit');
+    invariant('needs-you-holds', novaModel.map.needsYou >= 1, 'needs-you went empty despite a critical');
+    const atlasCandNow = novaModel.items.find((c) => c.refIds.includes(atlasDecision!.id));
+    invariant('atlas-demoted', atlasCandNow?.disposition === 'queue' && Boolean(atlasCandNow?.whyWaiting), 'atlas was not demoted to waiting with a reason');
+    invariant('nova-budget-immune', novaModel.budgetDemoted.includes(atlasCandNow!.id) && !novaModel.budgetDemoted.includes(`cand:decision:${novaDecision!.id}`), 'budget demoted the critical or missed the demotion');
+    log(`      ⚑ CRITICAL leads: ${novaDecision!.title}  (${novaDecision!.impact}/${novaDecision!.urgency})`);
+    log(`      atlas's question → waiting: "${atlasCandNow!.whyWaiting}"`);
+
+    // ── Beat 7 · developer takes over nova, fixes it, hands back ─────
+    log('');
+    log('▶ beat 7 — you take over nova, rewrite the push by hand, and return control');
+    const heldNova = manager.getExecution(ids.nova);
+    heldNova.takeOver('shubham', 'Force-pushing published docs branches is a human call; doing it myself.');
+    execRepo.save(heldNova);
+    invariant('nova-held', execRepo.findById(ids.nova)!.status === 'TAKEN_OVER', 'nova not TAKEN_OVER');
+    emit(
+      ids.nova,
+      [EventAdapter.createEvent(ids.nova, 'human.intervention', { action: 'take_over', actor: 'shubham', notes: 'rewinding the docs branch by hand' }, 'human')],
+      B.novaTakeOver,
+    );
+    emit(
+      ids.nova,
+      [EventAdapter.createEvent(ids.nova, 'file.changed', { filePath: 'docs/ROLLBACK.md', action: 'modified' }, 'human')],
+      B.novaManualEdit,
+    );
+    const backNova = manager.getExecution(ids.nova);
+    backNova.continueFromTakeOver('shubham', 'Pushed with --force-with-lease personally; agent keeps drafting docs.', ['docs/ROLLBACK.md']);
+    execRepo.save(backNova);
+    emit(
+      ids.nova,
+      [EventAdapter.createEvent(ids.nova, 'human.intervention', { action: 'continue', actor: 'shubham', notes: 'control returned to nova', modifications: ['docs/ROLLBACK.md'] }, 'human')],
+      B.novaReturnControl,
+    );
+    invariant('nova-running', execRepo.findById(ids.nova)!.status === 'RUNNING', 'nova did not return to RUNNING');
+    decisions.resolve(novaDecision!.id, 'rejected', { answerBy: 'shubham', feedback: 'handled personally during take-over with --force-with-lease' });
+
+    // ── Beat 8 · away at minute 10; the fleet finishes behind you ────
+    log('');
+    log('▶ beat 8 — away-mark at the 10-minute point; four agents finish while orion keeps one for you');
+    {
+      // atlas answers its question custom BEFORE it may legally complete.
+      decisions.resolve(atlasDecision!.id, 'custom', {
+        selectedOptionId: 'opt-1',
+        customValue: 'Dual-write behind a flag; migrate during the Saturday window',
+        answerBy: 'shubham',
+      });
+      invariant('atlas-resumed', execRepo.findById(ids.atlas)!.status === 'RUNNING', 'atlas did not resume after its answer');
+      emit(ids.atlas, EventAdapter.adaptToolCall(ids.atlas, { callId: 'at-edit2', name: 'edit', arguments: { file_path: 'src/migrations/0043.sql' } }), B.atlasAnswered + 0.3);
+    }
+    for (const a of S.agents) {
+      emit(
+        ids[a.id],
+        [EventAdapter.createEvent(ids[a.id], 'human.intervention', { action: 'mark_away', actor: 'shubham', notes: 'developer stepped away; fleet runs on its own' }, 'human')],
+        B.awayMark,
+      );
+    }
+    // Quiet, uneventful autonomous stretch (11 → 43) — a pass for everyone.
+    for (const [agentId, callId, min] of [
+      ['atlas', 'at-t1', 20], ['hera', 'he-t1', 21], ['nova', 'nv-t1', 22], ['orion', 'st-t1', 23], ['vesta', 'vs-t1', 24],
+    ] as const) {
+      gate(ids[agentId], callId, 'pnpm test', min);
+      emit(
+        ids[agentId],
+        EventAdapter.adaptToolResult(ids[agentId], { callId, toolName: 'bash', isError: false }, { command: 'pnpm test' }),
+        min + 0.9,
+      );
+    }
+    const finish = (agentId: string, min: number, summary: string): void => {
+      const id = ids[agentId];
+      const wrap = manager.getExecution(id);
+      wrap.addCompletedWork(summary);
+      execRepo.save(wrap);
+      emit(id, [EventAdapter.createEvent(id, 'execution.completed', { executionId: id, completedWork: [], summary, durationMs: 0 }, 'dsh')], min);
+      invariant(`${agentId}-completed`, execRepo.findById(id)!.status === 'COMPLETED', `${agentId} did not complete legally`);
+    };
+    finish('nova', 44.5, 'Docs sweep complete — rollback guide published with the human-made safe push');
+    finish('vesta', 45, 'Lint cleanup complete — zero warnings, zod added after one approval');
+    finish('hera', 45.5, 'API refactor complete — dependency added under standing delegation, nobody was asked');
+    emit(ids.atlas, EventAdapter.adaptToolResult(ids.atlas, { callId: 'at-t2', toolName: 'bash', isError: false }, { command: 'pnpm test' }), 46.2);
+    finish('atlas', 46.5, 'Payments migration shipped behind the dual-write flag per your answer');
+
+    // The one deliberate cliffhanger: orion gates AFTER its away-mark.
+    gate(ids.orion, 'or-g1', S.commands.orion, B.helmGate);
+    const orionDecision = pendingFor(ids.orion).find((d) => d.subject === `bash:${S.commands.orion}`);
+    invariant('orion-decision', orionDecision != null, 'helm uninstall produced no decision');
+    decisions.present(orionDecision!.id);
+    invariant('orion-paused', execRepo.findById(ids.orion)!.status === 'PAUSED', 'orion not held on the deployment gate');
+    log(`      ⚑ ${orionDecision!.title}  (${orionDecision!.impact}/${orionDecision!.urgency}) — orion PAUSED, heads the return-to-work brief`);
+
+    // The return: any later human action closes the away window.
+    for (const a of S.agents) {
+      emit(
+        ids[a.id],
+        [EventAdapter.createEvent(ids[a.id], 'human.intervention', { action: 'message', actor: 'shubham', notes: 'developer is back — reviewing the fleet' }, 'human')],
+        B.returnPresent,
+      );
+    }
+
+    // ── Re-time the story onto the fictional schedule (post-hoc, P9-style)
+    log('');
+    log('▶ re-timing the fleet onto the fictional schedule, then deriving the cockpit');
+    for (const a of S.agents) {
+      const state = execRepo.findById(ids[a.id])!.toState();
+      execRepo.save(new Execution(shiftSchedule(state, S.transitionOffsetsMin[a.id]!, base)));
+    }
+    const slots: Record<string, DecisionSlot> = {
+      [atlasDecision!.id]: S.decisionSlots.atlas!,
+      [vestaDecision!.id]: S.decisionSlots.vesta!,
+      [novaDecision!.id]: S.decisionSlots.nova!,
+      [orionDecision!.id]: S.decisionSlots.orion!,
+    };
+    for (const d of decisionRepo.list({})) {
+      const shifted = rescheduleDecision(d, base, slots[d.id]);
+      // The repository upsert never rewrites created_at — delete + reinsert.
+      decisionRepo.delete(d.id);
+      decisionRepo.save(shifted);
+    }
+    // Manager-created delegation forensics carry the REAL clock; pin them
+    // to their source event on the fictional schedule.
+    const updateStmt = rt.db.raw.prepare('UPDATE execution_events SET timestamp = ? WHERE id = ?');
+    for (const f of allEvents().filter((e) => e.type === 'policy.delegated')) {
+      const src = allEvents().find((e) => e.id === (f.payload as Record<string, unknown>).sourceEventId);
+      if (src) updateStmt.run(src.timestamp + 15_000, f.id);
+    }
+    // Persist observable decision-quality facts (post-hoc, derived).
+    const finalExecs = execRepo.list({});
+    const execById = new Map(finalExecs.map((e) => [e.id, e]));
+    const allDecisionsFinal = decisionRepo.list({});
+    for (const d of allDecisionsFinal) {
+      d.quality = deriveDecisionQuality(d, allDecisionsFinal, execById.get(d.executionId) ?? null);
+      decisionRepo.save(d);
+    }
+    const decisionsFinal = decisionRepo.list({});
+    const eventsFinal = allEvents();
+
+    // ── Final derivations ────────────────────────────────────────────
+    const finalModel = buildAttentionModel({
+      executions: finalExecs,
+      decisions: decisionsFinal,
+      events: eventsFinal,
+      now,
+    });
+    const pendingFinal = decisionsFinal.filter((d) => d.status === 'pending');
+    invariant('one-pending', pendingFinal.length === 1 && pendingFinal[0]!.id === orionDecision!.id, 'the story must end with exactly one held decision');
+    invariant('final-needs-you', finalModel.map.needsYou === 1, `final needsYou=${String(finalModel.map.needsYou)}, expected 1`);
+    invariant('final-finished', finalModel.map.finished === 4, `final finished=${String(finalModel.map.finished)}, expected 4`);
+    invariant('final-leads', finalModel.items[0]!.refIds.includes(orionDecision!.id), 'the held deployment decision does not lead the cockpit');
+
+    const perAgent: Record<string, AttentionAgentMetrics> = {};
+    let fleetTotalMs = 0;
+    let fleetHeldMs = 0;
+    let fleetControlMs = 0;
+    let fleetDecisions = 0;
+    let fleetTakeovers = 0;
+    for (const a of S.agents) {
+      const exec = execById.get(ids[a.id])!;
+      const own = decisionsFinal.filter((d) => d.executionId === exec.id);
+      const m = computeAttentionMetrics(exec, own, {
+        now,
+        takeoverCount: exec.interventions.filter((i) => i.type === 'take_over').length,
+      });
+      perAgent[a.id] = {
+        status: m.status,
+        totalMs: m.totalMs,
+        heldMs: m.heldMs,
+        humanControlMs: m.humanControlMs,
+        autonomousMs: m.autonomousMs,
+        interruptions: m.interruptions,
+        decisions: m.decisionsCreated,
+        pending: m.decisionsPending,
+        takeovers: m.takeovers,
+        attentionRatio: m.attentionRatio,
+      };
+      fleetTotalMs += m.totalMs;
+      fleetHeldMs += m.heldMs;
+      fleetControlMs += m.humanControlMs;
+      fleetDecisions += m.decisionsCreated;
+      fleetTakeovers += m.takeovers;
+    }
+    const fleetHumanMs = fleetHeldMs + fleetControlMs;
+    const fleetAutonomousMs = fleetTotalMs - fleetHumanMs;
+    const fleetRatio = fleetTotalMs > 0 ? fleetHumanMs / fleetTotalMs : 0;
+    invariant('attention-accounts', fleetHumanMs + fleetAutonomousMs === fleetTotalMs, 'held+control+autonomous does not equal total');
+    invariant('interruptions-reconcile', fleetDecisions + fleetTakeovers === Object.values(perAgent).reduce((s, p) => s + p.interruptions, 0), 'interruptions do not reconcile');
+    invariant('attention-budget', fleetHumanMs < 8 * MINUTE, `human attention ${minutesLabel(fleetHumanMs)} exceeds the realistic < 8 min budget`);
+
+    const roll = rollupDecisionQuality(decisionsFinal);
+    const delegatedForensics = eventsFinal.filter((e) => e.type === 'policy.delegated');
+    const delegatedCommands = new Set(delegatedForensics.map((e) => `${(e.payload as Record<string, unknown>).command ?? ''}`));
+    const unsafeActions = eventsFinal.filter(
+      (e) => (e.metadata?.attention as { ruleId?: string } | undefined)?.ruleId === 'policy-deny',
+    ).length;
+
+    // Budget-demoted across checkpoints — proven presentation-only below.
+    const demotedIds = [...new Set([...vestaModel.budgetDemoted, ...novaModel.budgetDemoted, ...finalModel.budgetDemoted, ...atlasModel.budgetDemoted, ...heraModel.budgetDemoted])];
+    const demotedDecisionIds = demotedIds
+      .map((id) => (id.startsWith('cand:decision:') ? id.slice('cand:decision:'.length) : null))
+      .filter((x): x is string => x != null);
+    const demotedResolved = demotedDecisionIds.filter((id) => decisionsFinal.some((d) => d.id === id && d.status !== 'pending')).length;
+    invariant('budget-presentation-only', demotedResolved === demotedDecisionIds.length, 'a budget demotion lost a decision — suppression must be presentation-only');
+
+    const orderedItems = finalModel.items.map((c) => ({
+      id: c.id,
+      agent: c.agentId,
+      disposition: c.disposition,
+      section: dispositionLanguage(c.disposition).section,
+    }));
+
+    const heldExec = execById.get(orionDecision!.executionId)!;
+    const heldAway = buildAwaySummary({
+      execution: heldExec,
+      events: eventsFinal.filter((e) => e.executionId === heldExec.id),
+      decisions: decisionsFinal.filter((d) => d.executionId === heldExec.id),
+      since: storyTs(B.awayMark),
+      now,
+    });
+    const heldTimeline = condenseTimeline(
+      eventsFinal.filter((e) => e.executionId === heldExec.id),
+      decisionsFinal.filter((d) => d.executionId === heldExec.id),
+      { limit: 12 },
+    );
+
+    // ── §20 · return-to-work block (ALL derived) ─────────────────────
+    const n = finalModel.map;
+    const heldDecision = decisionsFinal.find((d) => d.id === orionDecision!.id)!;
+    const heldFor = Math.max(0, now - heldDecision.createdAt);
+    const finalObs = finalModel.items.find((c) => c.category === 'failure-cluster');
+    const returnToWork: string[] = [
+      `While you were away: ${String(n.agents)} agents · ${String(n.finished)} finished · ${String(n.needsYou)} needs your review now · ${String(delegatedCommands.size)} ran under delegation · ${String(clusterMembers)} batched observations · ${String(unsafeActions)} unsafe`,
+      `Needs your review now: ${heldDecision.title} — ${heldExec.agent.id} has been held ${formatDuration(heldFor)}; answer with: conductor resolve ${heldDecision.id}`,
+      `Attention ratio: ${String(Math.round(fleetRatio * 1000) / 10)}% of agent-minutes needed you — ${minutesLabel(fleetHumanMs)} of human attention across a ${String(ATTENTION_STORY_MINUTES)}-min story (${String(Math.round((fleetHumanMs / totalMs) * 1000) / 10)}% of the story)`,
+      `Budget suppressed for presentation only: ${String(demotedIds.length)} demotions · ${String(demotedResolved)} durably answered · ${String(demotedIds.length - demotedResolved)} lost`,
+      `Failures that never interrupted you: ${String(finalObs ? 1 : 0)} cluster · ${String(clusterMembers)} grouped — ${finalObs?.summary ?? cluster.summary}`,
+      '',
+      'Held run — return-from-away brief:',
+      ...renderAwaySummary(heldAway).split('\n'),
+    ];
+    log('');
+    log('▶ beat 9 — RETURN TO WORK (§20)');
+    for (const line of returnToWork) log(line);
+
+    const agentRows = S.agents.map((a) => {
+      const p = perAgent[a.id]!;
+      const lang = statusLanguage(p.status);
+      const heldTxt = p.heldMs + p.humanControlMs > 0 ? ` · human ${minutesLabel(p.heldMs + p.humanControlMs)}` : '';
+      return `  ${a.id.padEnd(6)} ${a.goal.padEnd(20)} ${String(p.status).padEnd(10)} · ${String(p.decisions)} decision(s) · ${String(p.pending)} pending · ${String(p.takeovers)} takeover(s)${heldTxt} · ${lang.label}`;
+    });
+    const needsYouLine = `${String(n.needsYou)} ${n.needsYou === 1 ? 'requires' : 'require'} your attention: ${orionDecision!.title} (${heldExec.agent.id})`;
+    const finalScreen: string[] = [
+      '=================================================================',
+      '        CONDUCTOR · ATTENTION OS — FLEET RETURN TO WORK         ',
+      '=================================================================',
+      needsYouLine,
+      `Load: ${n.load.level} — ${n.load.reasons.join('; ')}`,
+      '',
+      'Fleet:',
+      ...agentRows,
+      '',
+      `Agents ${String(n.agents)} · needs-you ${String(n.needsYou)} · waiting ${String(n.waiting)} · watching ${String(n.watching)} · working ${String(n.working)} · finished ${String(n.finished)}`,
+      `Fleet time: ${minutesLabel(fleetTotalMs)} agent-minutes · autonomous ${minutesLabel(fleetAutonomousMs)} · human ${minutesLabel(fleetHumanMs)}`,
+      `Interruptions: ${String(fleetDecisions + fleetTakeovers)} (${String(fleetDecisions)} decisions + ${String(fleetTakeovers)} takeovers) · unsafe ${String(unsafeActions)}`,
+      `Decision quality: ${String(roll.resolved)} answered · median response ${roll.medianResponseMs != null ? formatDuration(roll.medianResponseMs) : '—'} · recurred ${String(roll.recurredCount)} · outcomes ${JSON.stringify(roll.outcomes)}`,
+      '',
+      ...returnToWork,
+      '',
+      `Held run timeline (${heldExec.agent.id}):`,
+      ...heldTimeline.map((e) => `  ${clock(e.at)}  ${e.tone === 'bad' ? '✗' : e.tone === 'warn' ? '!' : e.tone === 'ok' ? '✓' : '·'} ${e.text}${e.detail ? ` — ${e.detail}` : ''}`),
+      '=================================================================',
+    ];
+    log('');
+    for (const line of finalScreen) log(line);
+
+    const facts: AttentionDemoFacts = {
+      storyMinutes: ATTENTION_STORY_MINUTES,
+      agentsTotal: n.agents,
+      map: { ...n, items: finalModel.items.length },
+      stormEvents: stormClassifications.length,
+      stormDecisions,
+      stormPauseActions: stormPauses,
+      stormLevels: stormClassifications.map((c) => c.level),
+      stormClusters: stormCandidates.length,
+      stormClusterMembers: clusterMembers,
+      atlasDecisionImpact: atlasDecision!.impact,
+      atlasDecisionUrgency: atlasDecision!.urgency,
+      atlasHoldsNeedsYou: true,
+      atlasStatusAfterQuestion: 'PAUSED',
+      vestaDemoted: true,
+      vestaWhyWaiting: Boolean(vestaCand!.whyWaiting),
+      vestaDecisionImpact: vestaDecision!.impact,
+      delegationGranted: 1,
+      delegatedActions: delegatedCommands.size,
+      delegationForensics: delegatedForensics.length,
+      heraDecisions,
+      heraFinalDisposition: delegatedObs!.disposition,
+      novaCriticalLeads: true,
+      atlasDemotedToWaiting: true,
+      takeovers: fleetTakeovers,
+      novaStatusAfterTakeover: 'RUNNING',
+      decisionsTotal: decisionsFinal.length,
+      decisionsResolved: decisionsFinal.filter((d) => d.status !== 'pending').length,
+      decisionsPending: pendingFinal.length,
+      interruptionsTotal: fleetDecisions + fleetTakeovers,
+      unsafeActions,
+      budgetDemotions: demotedIds.length,
+      budgetDemotionsResolved: demotedResolved,
+      budgetSuppressedLost: demotedIds.length - demotedResolved,
+      heldMs: fleetHeldMs,
+      humanControlMs: fleetControlMs,
+      humanAttentionMs: fleetHumanMs,
+      autonomousMs: fleetAutonomousMs,
+      fleetTotalMs,
+      attentionRatio: fleetRatio,
+      medianResponseMs: roll.medianResponseMs,
+      recurrences: roll.recurredCount,
+      outcomeCompletedAfter: roll.outcomes['completed-after'] ?? 0,
+      eventCount: eventsFinal.length,
+      pendingTitle: orionDecision!.title,
+      pendingAgent: heldExec.agent.id,
+      pendingImpact: orionDecision!.impact,
+      pendingUrgency: orionDecision!.urgency,
+    };
+
+    return {
+      startedAt,
+      storyBaseAt: base,
+      storyEndAt: now,
+      dbPath,
+      map: n,
+      orderedItems,
+      budgetDemoted: demotedIds,
+      delegatedActions: delegatedCommands.size,
+      batches: [{ agent: cluster.agentId, members: clusterMembers }],
+      takeover: {
+        agent: 'nova',
+        actor: 'shubham',
+        decisionTitle: novaDecision!.title,
+        manualFile: 'docs/ROLLBACK.md',
+        tookOverAt: storyTs(B.novaTakeOver),
+        returnedAt: storyTs(B.novaReturnControl),
+      },
+      metrics: {
+        perAgent,
+        fleet: {
+          totalMs: fleetTotalMs,
+          heldMs: fleetHeldMs,
+          humanControlMs: fleetControlMs,
+          autonomousMs: fleetAutonomousMs,
+          humanAttentionMs: fleetHumanMs,
+          decisions: fleetDecisions,
+          takeovers: fleetTakeovers,
+          interruptions: fleetDecisions + fleetTakeovers,
+          attentionRatio: fleetRatio,
+        },
+        quality: roll,
+      },
+      returnToWork,
+      finalScreen,
+      executionIds: ids,
+      decisionIds: {
+        atlas: atlasDecision!.id,
+        vesta: vestaDecision!.id,
+        nova: novaDecision!.id,
+        orion: orionDecision!.id,
+      },
+      delegationId: grant.id,
+      facts,
+    };
+  } finally {
+    rt.db.close();
+  }
+}

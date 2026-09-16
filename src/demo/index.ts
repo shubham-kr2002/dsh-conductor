@@ -4,3 +4,10 @@
  */
 
 export * from './scenario.js';
+
+/**
+ * Phase 10 "Attention OS" deterministic fleet demo: see ./attention-os.ts.
+ * runDemoAttention() drives the real pipeline across five agents and
+ * returns the fully derived §20 return-to-work result.
+ */
+export * from './attention-os.js';
