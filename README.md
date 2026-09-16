@@ -125,18 +125,72 @@ extension-point archaeology. The short version:
 Conductor core never depends on DSH tools; DSH integration lives behind
 injected host bindings so the core stays testable standalone.
 
-### Mounting into DSH
+### Installing into DSH (the one supported path)
 
-Add a composition row to your profile and share the same SQLite file with
-the CLI — the agent keeps working, the CLI is your control surface:
+Conductor is a normal **DSH bundle** — an npm package whose `package.json`
+declares `dsh.bundle.patch`. Install it with the official plugin mechanism;
+do **not** hand-add a loader row to your profile's `cordis.patch.yml` (a
+second registration fails loudly at boot with a duplicate-entry error — by
+design).
+
+```bash
+# 1. build the bundle from a checkout (installs must see dist/)
+git clone https://github.com/shubham-kr2002/dsh-conductor
+cd dsh-conductor
+pnpm install && pnpm build && pnpm test
+
+# 2. create a custom profile from a shipped template (headless shown;
+#    web / acp work the same wherever tool hooks exist)
+dsh --profile conductor-test --from-default-profile headless --dump-config
+
+# 3. add Conductor (absolute path, a packed tarball, or a git URL)
+dsh plugin --profile conductor-test add "$PWD"
+
+# 4. verify the layer is composed
+dsh --profile conductor-test --dump-config | grep "== dsh-conductor"
+
+# 5. run — Conductor mounts inside the live Cordis composition
+cd /path/to/your/project
+dsh --profile conductor-test "your task here"
+```
+
+Every tool action the policy pauses ends the (headless) turn while the run
+stays held in SQLite. From a second terminal, in the same directory:
+
+```bash
+conductor attention             # what needs you
+conductor resolve <id> --accept # a one-time token
+dsh --profile conductor-test "retry the push"  # token consumed, exactly once
+```
+
+Remove / reinstall are symmetric: `dsh plugin --profile conductor-test
+remove dsh-conductor` (the profile boots fine without it), then `add` again.
+
+**Configuration.** The bundle row is `{ id: dsh-conductor, name:
+dsh-conductor }` — no config required. Default placement: the control plane
+lives at `<launch-dir>/.conductor/conductor.db` — one plane per project
+workspace, shared by the CLI/UI in that directory; `CONDUCTOR_DB_PATH`
+overrides it explicitly. Per-profile overrides go in the profile's own
+`cordis.patch.yml` targeting the row id (this replaces the bundle's config
+wholesale):
 
 ```yaml
-- name: 'dsh-conductor'   # dist/src/dsh/cordis-plugin.js (see ARCHITECTURE.md §8)
+- id: dsh-conductor
   config:
     goal: 'finish the payments migration'
-    workspaceRoot: /srv/payments
-    dbPath: /srv/payments/.conductor/conductor.db
+    workspaceRoot: /srv/payments                   # default: process.cwd()
+    dbPath: /srv/payments/.conductor/conductor.db  # explicit wins
+    autoAnswerRoutine: true                        # answer routine questions
+    completeOnIdle: false                          # don't auto-complete turns
 ```
+
+**Compatibility.** Verified against DSH `0.1.5-rc.1` (Cordis `4.0.2`,
+plugin-loader `1.0.3`). `@deepseek-ai/cordis` is a peer declaration only —
+the built plugin never imports it (the host surface is a structural
+mirror). Mounting requires a profile whose surface exposes
+`tools/pre-execute` (every shipped agent app does). The in-repo live-host
+demo and `conductor demo:os` are demonstrations of the same control plane,
+not installation paths.
 
 ## Development
 

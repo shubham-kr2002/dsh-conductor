@@ -434,3 +434,59 @@ multi-user delegation, approval inheritance across sessions, scheduled
 digests, per-factor weighting knobs — all would add a second source of truth
 or fake precision the mission forbids.
 
+
+## 12. DSH bundle integration (Phase 10.1, as built)
+
+Conductor ships as one official mechanism: an npm **bundle** a profile pulls
+in via `dsh plugin add`. No competing plugin system was invented; the
+package simply conforms to the composition chain verified against the live
+DSH 0.1.5-rc.1 sources:
+
+```
+package.json#dsh.bundle.patch = ./cordis.patch.yml
+        │  dsh plugin --profile <p> add <pkg>   (pnpm forward + reconcile →
+        ▼   dsh.profile.bundles gains the name)
+profile package.json#dsh.profile.bundles
+        │  boot: resolveBundleDir → read patch from the INSTALLED package dir
+        ▼  (bare names import against the profile directory)
+cordis.patch.yml:  - insert: [{ id: dsh-conductor, name: dsh-conductor }]
+        ▼
+Cordis loader row → dist/src/dsh/bundle-entry.js  (exports['.'])
+        │  export const name + export function apply(ctx, config)
+        ▼   — the official static shape (NOT a factory returning a plugin;
+        ▼     that shape silently no-ops in this loader version)
+mountConductor(config)          src/dsh/mount.ts — the ONE composition root
+        ▼
+ConductorBridge + ExecutionManager + policy + attention + SQLite
+```
+
+**Terminology discipline.** *Bundle* = this package (config layer).
+*Profile* = a runnable composition (never published by us). *Plugin* = the
+module the loader mounts (`bundle-entry.js`). *Runtime* = `ConductorRuntime`
+from `composition.ts`. *Control plane* = executions/decisions/policy/SQLite.
+*Attention OS* = the pure derivation layer (§11) — none of it knows DSH
+exists.
+
+**Execution adoption across processes.** Headless DSH ends the turn the
+moment a consequential tool is held (`turn/end {kind:'blocked'}`); the
+operator's `conductor resolve` therefore lands *between* runs. Approvals are
+execution-scoped, so a remount of the same workspace adopts the newest
+non-terminal execution (`reuseOpenExecution` — bundle-only; default mounts
+keep P9 semantics byte-identical). Adoption never clears a pause: pending
+decisions keep gating the fresh run.
+
+**Lifecycle truths (all lived in the clean room, not assumed):**
+- `dsh plugin add <folder>` links; `<tarball>` installs a COPY — the copy
+  must be self-sufficient (`files` allow-list: dist/src + patch).
+- remove reconciles `dsh.profile.bundles` automatically; reinstall and
+  update re-register cleanly; a profile boots fine without the bundle.
+- Duplicate registration is refused twice over: the loader hard-fails a
+  repeated row id at boot, and `bundle-entry` guards in-process mounts.
+- DSH placement env: no XDG; `$DSH_HOME` else `~/.dsh`. No official service
+  exposes the active profile name — Conductor deliberately does not need
+  it; workspace-scoped `.conductor/conductor.db` (or `CONDUCTOR_DB_PATH`)
+  keeps the CLI/UI and the mounted plane shared without profile coupling.
+- Validation is gated: `scripts/validate-package.mjs` fails on absolute
+  author paths, missing bundle declaration, patch artifacts referencing
+  nonexistent files, artifacts outside `files`, duplicate patch ids — run
+  via `pnpm validate:package` and automatically in `prepack`.
