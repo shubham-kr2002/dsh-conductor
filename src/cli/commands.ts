@@ -20,73 +20,7 @@ import { ExecutionManager } from '../manager/execution-manager.js';
 import type { ConductorEvent } from '../types/event.js';
 import type { ConductorDecision } from '../types/decision.js';
 
-export function resolveDbPath(): string {
-  if (process.env.CONDUCTOR_DB_PATH) {
-    return process.env.CONDUCTOR_DB_PATH;
-  }
-  // Try local workspace .conductor/ directory
-  const localDb = resolve(process.cwd(), '.conductor', 'conductor.db');
-  return localDb;
-}
-
-export interface ConductorRuntime {
-  manager: ExecutionManager;
-  decisions: DecisionQueue;
-  takeover: TakeoverService;
-  handoff: HandoffService;
-  execRepo: SqliteExecutionRepository;
-  eventRepo: SqliteEventRepository;
-  decisionRepo: SqliteDecisionRepository;
-  takeoverRepo: SqliteTakeoverRepository;
-  handoffRepo: SqliteHandoffRepository;
-  delegationRepo: SqliteDelegationRepository;
-  delegations: DelegationService;
-  db: ConductorDatabase;
-}
-
-export function createRuntime(dbPath?: string): ConductorRuntime {
-  const path = dbPath ?? resolveDbPath();
-  const db = new ConductorDatabase({ path });
-  const execRepo = new SqliteExecutionRepository(db);
-  const eventRepo = new SqliteEventRepository(db);
-  const decisionRepo = new SqliteDecisionRepository(db);
-  const takeoverRepo = new SqliteTakeoverRepository(db);
-  const handoffRepo = new SqliteHandoffRepository(db);
-  const delegationRepo = new SqliteDelegationRepository(db);
-  const delegations = new DelegationService({ delegationRepo, decisionRepo });
-  const decisions = new DecisionQueue(decisionRepo, execRepo);
-  const manager = new ExecutionManager(execRepo, eventRepo, undefined, undefined, decisions);
-  manager.delegations = delegations;
-  const takeover = new TakeoverService({
-    executionRepo: execRepo,
-    eventRepo,
-    decisionRepo,
-    takeoverRepo,
-  });
-  const handoff = new HandoffService({
-    executionRepo: execRepo,
-    eventRepo,
-    decisionRepo,
-    handoffRepo,
-  });
-  return {
-    manager,
-    decisions,
-    takeover,
-    handoff,
-    execRepo,
-    eventRepo,
-    decisionRepo,
-    takeoverRepo,
-    handoffRepo,
-    delegationRepo,
-    delegations,
-    db,
-  };
-}
-
-/** Backwards-compatible alias used by the CLI. */
-export const createManager = createRuntime;
+export { resolveDbPath, createRuntime, createRuntime as createManager, type ConductorRuntime } from '../composition.js';
 
 export function renderStatus(summary: ReturnType<ExecutionManager['getStatus']>): string {
   const lines: string[] = [

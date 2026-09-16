@@ -7,18 +7,16 @@
  * DSH code.
  */
 
-import { ConductorDatabase } from '../storage/database.js';
-import { SqliteExecutionRepository } from '../storage/execution-repository.js';
-import { SqliteEventRepository } from '../storage/event-repository.js';
-import { SqliteDecisionRepository } from '../storage/decision-repository.js';
-import { SqliteDelegationRepository } from '../storage/delegation-repository.js';
-import { DelegationService } from '../delegation/delegation-service.js';
-import { DecisionQueue } from '../decision/decision-queue.js';
-import { ExecutionManager } from '../manager/execution-manager.js';
+import type { DelegationService } from '../delegation/delegation-service.js';
+import type { ExecutionManager } from '../manager/execution-manager.js';
+import type { ConductorDatabase } from '../storage/database.js';
+import type { DecisionQueue } from '../decision/decision-queue.js';
 import { EventAdapter } from '../adapter/event-adapter.js';
 import { ConductorBridge } from './conductor-bridge.js';
 import { createConductorCordisPlugin, type CordisCtx, type ConductorPluginConfig } from './cordis-plugin.js';
 import type { HostSessionEvent } from './host-surface.js';
+
+import { createRuntime, type ConductorRuntime } from '../composition.js';
 
 export interface ConductorMountOptions {
   goal: string;
@@ -37,6 +35,8 @@ export interface ConductorMount {
   manager: ExecutionManager;
   decisions: DecisionQueue;
   delegations: DelegationService;
+  /** Full composed control plane (takeover/handoff included) via one root. */
+  runtime: ConductorRuntime;
   db: ConductorDatabase;
   executionId: string;
   close(): void;
@@ -47,15 +47,8 @@ export function mountConductor(config: ConductorMountOptions | ConductorPluginCo
   const workspaceRoot = cfg.workspaceRoot ?? process.cwd();
   const dbPath = cfg.dbPath ?? `${workspaceRoot}/.conductor/conductor.db`;
 
-  const db = new ConductorDatabase({ path: dbPath });
-  const execRepo = new SqliteExecutionRepository(db);
-  const eventRepo = new SqliteEventRepository(db);
-  const decisionRepo = new SqliteDecisionRepository(db);
-  const delegationRepo = new SqliteDelegationRepository(db);
-  const delegations = new DelegationService({ delegationRepo, decisionRepo });
-  const decisions = new DecisionQueue(decisionRepo, execRepo);
-  const manager = new ExecutionManager(execRepo, eventRepo, undefined, undefined, decisions);
-  manager.delegations = delegations;
+  const runtime = createRuntime(dbPath);
+  const { db, manager, decisions, delegations } = runtime;
   const bridge = new ConductorBridge({
     manager,
     decisions,
@@ -132,6 +125,7 @@ export function mountConductor(config: ConductorMountOptions | ConductorPluginCo
     manager,
     decisions,
     delegations,
+    runtime,
     db,
     executionId: exec.id,
     close: () => db.close(),
