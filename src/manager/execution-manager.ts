@@ -9,6 +9,7 @@ import { ExecutionNotFoundError } from '../domain/errors.js';
 import type { IExecutionRepository } from '../storage/execution-repository.js';
 import type { IEventRepository } from '../storage/event-repository.js';
 import type { ConductorEvent } from '../types/event.js';
+import { randomUUID } from 'node:crypto';
 import type { ExecutionState, ExecutionStatus } from '../types/execution.js';
 import { PolicyEngine } from '../policy/policy-engine.js';
 import { approvalSubject } from '../policy/approval-subject.js';
@@ -60,6 +61,14 @@ export class ExecutionManager {
   public decisions?: DecisionQueue;
   /** When true, PAUSE classifications transition the execution to PAUSED. */
   public enforceAttention = true;
+
+  /**
+   * Optional human-delegation authority. When a standing delegation covers
+   * a require_approval action, the event is RECORDED (with immutable
+   * `policy.delegated` forensics) instead of interrupting the developer.
+   * Explicit current denials shadow delegations (DelegationService).
+   */
+  public delegations?: import('../delegation/delegation-service.js').DelegationService;
 
   constructor(
     public readonly executionRepo: IExecutionRepository,
@@ -148,6 +157,7 @@ export class ExecutionManager {
 
     // 1. Classify (deterministic)
     let classification: AttentionClassification | null = null;
+    let delegated: import('../delegation/delegation-service.js').CoverResult | null = null;
     if (execution) {
       const ctx = this.attentionContext(event.executionId);
       const isErrorLike =
@@ -159,6 +169,23 @@ export class ExecutionManager {
         this.deriveAttentionInput(execution, event),
         ctx,
       );
+
+      // Standing human delegation: PAUSE-worthy is downgraded to RECORD —
+      // presentation defers to the entrustment the human themselves gave.
+      if (classification.action === 'PAUSE') {
+        const cover = this.delegationCover(execution, event);
+        if (cover) {
+          delegated = cover;
+          classification = {
+            ...classification,
+            level: 'BACKGROUND',
+            action: 'RECORD',
+            rationale: cover.reason,
+            ruleId: `delegation:${cover.delegation.id}`,
+            confidence: 1,
+          };
+        }
+      }
     }
 
     // 2. Persist the event (classification travels in metadata)
@@ -179,6 +206,29 @@ export class ExecutionManager {
       : event;
     this.eventRepo.save(enriched);
 
+    // 2b. Immutable delegation forensics (what ran, under whose authority).
+    if (delegated) {
+      const p = enriched.payload as Record<string, unknown>;
+      const forensics: ConductorEvent = {
+        id: `evt-${randomUUID()}`,
+        executionId: enriched.executionId,
+        type: 'policy.delegated',
+        timestamp: Date.now(),
+        payload: {
+          sourceEventId: enriched.id,
+          delegationId: delegated.delegation.id,
+          grantedBy: delegated.delegation.grantedBy,
+          category: delegated.delegation.category,
+          command: p.command ?? ((p.arguments as Record<string, unknown> | undefined)?.command ?? null),
+          toolName: p.toolName ?? null,
+          reversibility: p.reversibility ?? 'unknown',
+        },
+        source: 'conductor',
+        metadata: { delegated: true, ruleId: delegated.delegation.id },
+      };
+      this.eventRepo.save(forensics);
+    }
+
     // 3. Apply event and attention action to execution state
     if (execution && classification) {
       this.applyEventToExecution(execution, enriched);
@@ -189,6 +239,41 @@ export class ExecutionManager {
     // 4. Notify subscribers
     this.notify(enriched);
     return classification;
+  }
+
+  /** Delegation authority check for a PAUSE-worthy tool/command event. */
+  private delegationCover(
+    execution: Execution,
+    event: ConductorEvent,
+  ): import('../delegation/delegation-service.js').CoverResult | null {
+    const service = this.delegations;
+    if (!service) return null;
+    if (event.type !== 'tool.called' && event.type !== 'command.started') return null;
+    const payload = event.payload as Record<string, unknown>;
+    let evalResult;
+    if (event.type === 'tool.called' && typeof payload.toolName === 'string') {
+      evalResult = this.policyEngine.evaluateToolExecution(
+        payload.toolName,
+        (payload.arguments as Record<string, unknown>) ?? {},
+      );
+    } else if (typeof payload.command === 'string') {
+      evalResult = this.policyEngine.evaluateShellCommand(payload.command);
+    } else {
+      return null;
+    }
+    if (evalResult.action !== 'require_approval') return null;
+    const args = (payload.arguments as Record<string, unknown> | undefined) ?? {};
+    const resource = String(
+      payload.command ?? args.command ?? payload.filePath ?? args.file_path ?? args.path ?? '',
+    );
+    return service.covers({
+      executionId: execution.id,
+      category: evalResult.category,
+      ...(evalResult.ruleId ? { ruleId: evalResult.ruleId } : {}),
+      resource,
+      subject: subjectForEvent(event),
+      now: Date.now(),
+    });
   }
 
   /** Map an event to attention-engine input using execution state + policy engine. */

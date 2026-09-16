@@ -1,0 +1,78 @@
+/**
+ * Attention candidates
+ *
+ * The canonical internal representation of "something that may deserve
+ * human attention". Candidates are DERIVED views over durable rows
+ * (executions, decisions, events) — never a second source of truth. Any
+ * value that cannot be deterministically derived is explicitly null,
+ * never fabricated.
+ */
+
+import type { AttentionDisposition, Consequence } from '../types/attention.js';
+import type { DecisionWhy } from '../types/decision.js';
+
+export type CandidateKind =
+  /** A pending decision (approval or agent question). */
+  | 'decision'
+  /** Execution-level attention: blocked, handoff awaiting, takeover idle. */
+  | 'execution'
+  /** An observation cluster: repeated failures, delegated actions, etc. */
+  | 'observation';
+
+export interface AttentionFactors {
+  /** How damaging could waiting be — from the decision/event evidence. */
+  consequence: Consequence;
+  /** Time sensitivity derived from blocking + age, never predicted. */
+  urgency: 'low' | 'medium' | 'high' | 'immediate';
+  /** Is autonomous work prevented right now by this candidate? */
+  blocking: boolean;
+  /** Observable: how long the run has been held because of this issue. */
+  blockedMs: number | null;
+  reversibility: 'reversible' | 'irreversible' | 'unknown';
+  /** 0..1 when the pipeline measured it; null when genuinely unknown. */
+  ambiguity: number | null;
+  /** Classification confidence where the engine reported one. */
+  confidence: number | null;
+  ageMs: number;
+  /** Other executions waiting on this one (handoff-derived; 0 = fact). */
+  dependents: number;
+  /** Likely human cost to resolve, from the response shape needed. */
+  humanCost: 'single-click' | 'pick-an-option' | 'read-and-judge';
+  deadlineAt: number | null;
+}
+
+export interface AttentionCandidate {
+  /** Stable identity: same underlying rows produce the same id. */
+  id: string;
+  executionId: string;
+  goal: string;
+  agentId: string;
+  kind: CandidateKind;
+  /** The durable row this points at (decision id, event id, execution id). */
+  refIds: string[];
+  category:
+    | 'approval'
+    | 'question'
+    | 'failure-cluster'
+    | 'blocked'
+    | 'handoff'
+    | 'takeover-idle'
+    | 'delegated-activity'
+    | 'other';
+  title: string;
+  /** Short human sentence: what happened, in product language. */
+  summary: string;
+  disposition: AttentionDisposition;
+  factors: AttentionFactors;
+  /** Why this is deferred when it is not on top (null = not deferred). */
+  whyWaiting: string | null;
+  /** When clustered, the members merged into this candidate. */
+  clusterIds: string[];
+  /** Seven-field explanation when this comes from a decision. */
+  why?: DecisionWhy;
+  createdAt: number;
+}
+
+export function candidateAge(c: AttentionCandidate, now: number): number {
+  return Math.max(0, now - c.createdAt);
+}

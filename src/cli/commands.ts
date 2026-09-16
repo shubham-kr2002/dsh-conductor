@@ -8,6 +8,8 @@ import { ConductorDatabase } from '../storage/database.js';
 import { SqliteExecutionRepository } from '../storage/execution-repository.js';
 import { SqliteEventRepository } from '../storage/event-repository.js';
 import { SqliteDecisionRepository } from '../storage/decision-repository.js';
+import { SqliteDelegationRepository } from '../storage/delegation-repository.js';
+import { DelegationService } from '../delegation/delegation-service.js';
 import { SqliteTakeoverRepository } from '../storage/takeover-repository.js';
 import { SqliteHandoffRepository } from '../storage/handoff-repository.js';
 import { decisionStatusLabel } from '../summary/status-language.js';
@@ -37,6 +39,8 @@ export interface ConductorRuntime {
   decisionRepo: SqliteDecisionRepository;
   takeoverRepo: SqliteTakeoverRepository;
   handoffRepo: SqliteHandoffRepository;
+  delegationRepo: SqliteDelegationRepository;
+  delegations: DelegationService;
   db: ConductorDatabase;
 }
 
@@ -48,8 +52,11 @@ export function createRuntime(dbPath?: string): ConductorRuntime {
   const decisionRepo = new SqliteDecisionRepository(db);
   const takeoverRepo = new SqliteTakeoverRepository(db);
   const handoffRepo = new SqliteHandoffRepository(db);
+  const delegationRepo = new SqliteDelegationRepository(db);
+  const delegations = new DelegationService({ delegationRepo, decisionRepo });
   const decisions = new DecisionQueue(decisionRepo, execRepo);
   const manager = new ExecutionManager(execRepo, eventRepo, undefined, undefined, decisions);
+  manager.delegations = delegations;
   const takeover = new TakeoverService({
     executionRepo: execRepo,
     eventRepo,
@@ -72,6 +79,8 @@ export function createRuntime(dbPath?: string): ConductorRuntime {
     decisionRepo,
     takeoverRepo,
     handoffRepo,
+    delegationRepo,
+    delegations,
     db,
   };
 }

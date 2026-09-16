@@ -11,6 +11,8 @@ import { ConductorDatabase } from '../storage/database.js';
 import { SqliteExecutionRepository } from '../storage/execution-repository.js';
 import { SqliteEventRepository } from '../storage/event-repository.js';
 import { SqliteDecisionRepository } from '../storage/decision-repository.js';
+import { SqliteDelegationRepository } from '../storage/delegation-repository.js';
+import { DelegationService } from '../delegation/delegation-service.js';
 import { DecisionQueue } from '../decision/decision-queue.js';
 import { ExecutionManager } from '../manager/execution-manager.js';
 import { EventAdapter } from '../adapter/event-adapter.js';
@@ -34,6 +36,7 @@ export interface ConductorMount {
   bridge: ConductorBridge;
   manager: ExecutionManager;
   decisions: DecisionQueue;
+  delegations: DelegationService;
   db: ConductorDatabase;
   executionId: string;
   close(): void;
@@ -48,8 +51,11 @@ export function mountConductor(config: ConductorMountOptions | ConductorPluginCo
   const execRepo = new SqliteExecutionRepository(db);
   const eventRepo = new SqliteEventRepository(db);
   const decisionRepo = new SqliteDecisionRepository(db);
+  const delegationRepo = new SqliteDelegationRepository(db);
+  const delegations = new DelegationService({ delegationRepo, decisionRepo });
   const decisions = new DecisionQueue(decisionRepo, execRepo);
   const manager = new ExecutionManager(execRepo, eventRepo, undefined, undefined, decisions);
+  manager.delegations = delegations;
   const bridge = new ConductorBridge({
     manager,
     decisions,
@@ -125,6 +131,7 @@ export function mountConductor(config: ConductorMountOptions | ConductorPluginCo
     bridge,
     manager,
     decisions,
+    delegations,
     db,
     executionId: exec.id,
     close: () => db.close(),

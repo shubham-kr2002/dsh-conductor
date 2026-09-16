@@ -46,3 +46,41 @@ export interface AttentionClassification {
    */
   needsLlmReview?: boolean;
 }
+
+/**
+ * Where an attention candidate goes in the human's field of view.
+ * The AttentionEngine still owns classification (level/action); the
+ * orchestrator decides DISPOSITION — how much of the human this deserves.
+ * important ≠ interrupt: everything below SURFACE stays durable and
+ * discoverable; nothing consequential is ever deleted, only deferred.
+ */
+export type AttentionDisposition =
+  /** Not worth recording as attention (pure telemetry). */
+  | 'ignore'
+  /** Recorded, part of history; no human time expected. */
+  | 'observe'
+  /** Shown in the control surface, no interruption pressure. */
+  | 'surface'
+  /** Merged into a cluster; the human reviews the cluster, not members. */
+  | 'batch'
+  /** Human attention may be needed, but it can safely wait. */
+  | 'queue'
+  /** Top of the cockpit: the developer should look now. */
+  | 'interrupt'
+  /** Immediate human control is justified; never budget-suppressed. */
+  | 'critical';
+
+/** Observable human context that legitimately changes dispositions. */
+export interface HumanAttentionContext {
+  now: number;
+  /** True when the developer explicitly marked away (return pending). */
+  away: boolean;
+  /** How many things already hold the "needs you now" slot. */
+  activeInterrupts: number;
+}
+
+/** Transparent load classification with its factual basis. */
+export interface AttentionLoad {
+  level: 'LOW' | 'MEDIUM' | 'HIGH' | 'OVERLOADED';
+  reasons: string[];
+}

@@ -125,4 +125,22 @@ CREATE TABLE IF NOT EXISTS takeovers (
 );
 
 CREATE INDEX IF NOT EXISTS idx_takeovers_exec_id ON takeovers(execution_id, started_at DESC);
+
+CREATE TABLE IF NOT EXISTS delegations (
+  id TEXT PRIMARY KEY,
+  execution_id TEXT,
+  scope TEXT NOT NULL,
+  category TEXT NOT NULL,
+  resource_pattern TEXT,
+  authority TEXT NOT NULL,
+  origin TEXT NOT NULL,
+  granted_by TEXT NOT NULL,
+  granted_at INTEGER NOT NULL,
+  expires_at INTEGER,
+  revoked_at INTEGER,
+  revoked_by TEXT,
+  note TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_delegations_active ON delegations(revoked_at, expires_at);
 `;

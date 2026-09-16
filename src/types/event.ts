@@ -18,7 +18,8 @@ export type ConductorEventType =
   | 'agent.blocked'
   | 'agent.question'
   | 'agent.handoff'
-  | 'human.intervention';
+  | 'human.intervention'
+  | 'policy.delegated';
 
 export type EventSource = 'dsh' | 'agent' | 'human' | 'conductor';
 

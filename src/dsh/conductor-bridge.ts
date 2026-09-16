@@ -168,6 +168,24 @@ export class ConductorBridge {
       return { kind: 'deny', reason: `Conductor policy: ${policy.reason ?? 'denied'}` };
     }
     if (policy.action === 'require_approval') {
+      // A standing human delegation (checked identically by the manager,
+      // which already recorded policy.delegated forensics above) releases
+      // the gate — but never while held, and never over a current denial.
+      const delegations = this.deps.manager.delegations;
+      if (delegations) {
+        const fresh0 = this.deps.manager.executionRepo.findById(execution.id);
+        if (fresh0 && !HELD_STATUSES.has(fresh0.status)) {
+          const covered = delegations.covers({
+            executionId: execution.id,
+            category: policy.category,
+            ...(policy.ruleId ? { ruleId: policy.ruleId } : {}),
+            resource: String(args.command ?? args.file_path ?? args.path ?? ''),
+            subject,
+            now: Date.now(),
+          });
+          if (covered) return undefined; // allow — delegated
+        }
+      }
       const fresh = this.deps.manager.executionRepo.findById(execution.id);
       const nowHeld = fresh ? HELD_STATUSES.has(fresh.status) : false;
       return {
