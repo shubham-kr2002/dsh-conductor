@@ -36,6 +36,9 @@ human who must occasionally exercise judgment.
 | **Policy engine** | Deterministic rules decide what's routine, what needs approval, what's denied outright (secrets access, `sudo`, system writes). |
 | **Attention engine** | Rules classify every event SILENT / BACKGROUND / DECISION / CRITICAL. Low-consequence work stays silent; critical or ambiguous work pauses the run. Self-healing retries are *not* interruptions. |
 | **Decision queue** | Pauses become concrete, prioritized, answerable questions — never log noise. Accept / reject / custom answer; resolving the last pending decision resumes the agent automatically. |
+| **Attention OS** | Across the whole fleet: one deterministic ordering over real factors (blocking → consequence → urgency → reversibility → ambiguity → dependents → age), an **interruption budget** ("1 thing needs you now · 4 are safely waiting"), and batching that turns 21 test failures into one item without losing a forensic row. Deferral changes presentation, never control. |
+| **Delegation** | Explicitly entrust a category ("dependency installs — don't ask") scoped, expiring, revocable, audited. Covered actions run autonomously *and leave a `policy.delegated` trail*. Your denial of the same subject always overrides a standing delegation. |
+| **Inverse explanations** | "Why *didn't* you interrupt me?" — every autonomous pass is reconstructible from stored facts: policy allowed it, it was reversible, you delegated it. Numbers we don't measure are reported as `not measured`. |
 | **Take over / continue** | Freeze the agent, capture workspace state, edit files yourself, hand back. Conductor reconciles your changes into the execution state and tells the agent the current workspace is authoritative. |
 | **Away mode** | Come back to a decision-oriented summary of what happened while you were gone — *not* a transcript. |
 | **Handoff** | Structured state transfer between agents: goal, completed work, binding decisions, failed approaches, test rollup, risks, next action. No transcript dumping. |
@@ -58,6 +61,15 @@ conductor decisions
 conductor resolve dec-… --reject --feedback "never force-push to main"
 conductor resolve dec-… --accept
 
+# where should my attention go, across every agent?
+conductor attention               # NEEDS YOU / WAITING / WATCHING / WORKING + load
+conductor attention --why dec-…   # why this leads — or why something didn't interrupt
+conductor attention --history     # where your attention went today
+
+# entrust a category so it stops interrupting (revocable, audited)
+conductor delegate dependencies --pattern pnpm --hours 8
+conductor delegations --suggest   # active + "you approved this 3×" offers
+
 # jump in yourself, then give control back
 conductor take-over exec-… --notes "the migration is wrong"
 #   …edit files in the workspace…
@@ -74,6 +86,7 @@ conductor timeline           # what happened, condensed — no transcript
 
 # see the whole product in one deterministic run (42-min story, derived stats)
 conductor demo
+conductor demo:os            # the 5-agent Attention OS story: budget · batching · delegation
 conductor --db .conductor-demo/demo.db metrics   # any command, any control plane
 
 # audit trail
@@ -92,7 +105,11 @@ extension-point archaeology. The short version:
 - `src/adapter` — normalizes raw runtime activity into `ConductorEvent`s
 - `src/policy` — deterministic allow/approve/deny rules
 - `src/attention` — deterministic attention classification (LLM escalation
-  is an *option*, gated by `needsLlmReview`, never a default)
+  is an *option*, gated by `needsLlmReview`, never a default) plus the
+  Attention OS derivation layer: candidates, prioritization, budget,
+  clustering, the on-demand fleet model, inverse explanations
+- `src/delegation` — standing human entrustment (scoped/expiring/revocable),
+  denial-shadowed by explicit human rejections, offer-only decision memory
 - `src/decision` — prioritized queue, resolution semantics, auto-resume
 - `src/takeover` — freeze/capture/continue/reconcile
 - `src/summary` — away-mode briefs
@@ -143,8 +160,14 @@ conductor ui --db ./.conductor/conductor.db   # http://127.0.0.1:8717
 The screen answers one question at three levels:
 
 - **L1 — attention budget:** `3 agents working · 1 needs your judgment`, plus
-  `● 4m attention / ○ 38m autonomous · attention ratio 9%`. Derived entirely
-  from the transition log, never from extra bookkeeping.
+  `● 4m attention / ○ 38m autonomous · attention ratio 9%` and a load chip
+  (`Attention load: HIGH — 1 critical · 2 queued`). Derived entirely from
+  stored facts, never from extra bookkeeping.
+- **Attention cockpit:** the main column is ordered by the deterministic
+  budget — **NEEDS YOU** (with the seven-field why), **WAITING** (each with
+  its `whyWaiting` sentence), **WATCHING** (batched clusters, expandable to
+  members), and a collapsed **WORKING** line. Delegation offers surface as
+  one calm question; granting them is one click, revocable forever after.
 - **L2 — execution cards:** goal, human-readable status
   (`Waiting for your judgment`, not `PAUSED`), the last *semantic* activity,
   files touched, pending count. A card never becomes a transcript.
@@ -159,7 +182,7 @@ Events (no Redis, no WebSocket layer). CLI mirrors every view:
 `conductor metrics`, `conductor timeline`, `conductor resolve`.
 
 
-Status: Phases 0–9 complete (see ARCHITECTURE.md §10). `pnpm test` → all green.
+Status: Phases 0–10 complete (see ARCHITECTURE.md §11). `pnpm test` → all green.
 
 ## License
 
