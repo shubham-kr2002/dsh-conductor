@@ -119,6 +119,38 @@ describe('Attention model — multi-agent fleet view', () => {
   });
 });
 
+describe('Away semantics — honest and self-clearing', () => {
+  test('mark_away queues interrupts; answering anything ends the away window', () => {
+    const r = runtime();
+    const a = exec(r, 'atlas');
+    const b = exec(r, 'hera');
+    const c = exec(r, 'nova');
+    const awayAt = Date.now();
+    r.eventRepo.save({
+      id: 'evt-away-1', executionId: a.id, type: 'human.intervention',
+      timestamp: awayAt, payload: { action: 'mark_away' }, source: 'human',
+    } as ConductorEvent);
+    gate(r, b.id, 'aw-b', 'pnpm add left-pad');
+    gate(r, c.id, 'aw-c', 'pnpm add zod');
+    const modelAway = loadModel(r);
+    const itemsAway = modelAway.items.filter((i) => i.kind === 'decision');
+    assert.equal(itemsAway.length, 2);
+    assert.ok(itemsAway.every((i) => i.disposition === 'queue' || i.disposition === 'surface'),
+      'away: nobody is interrupted');
+    assert.ok(modelAway.map.needsYou === 0);
+
+    // The human answers ONE decision — that is presence, away must clear.
+    const first = r.decisions.pending()[0]!;
+    r.decisions.resolve(first.id, 'accepted', { answerBy: 'dev' });
+    while (Date.now() <= awayAt) { /* cross the clock boundary */ }
+    const modelBack = loadModel(r);
+    const still = modelBack.items.find((i) => i.kind === 'decision' && i.disposition === 'interrupt');
+    assert.ok(still, 'the remaining decision interrupts again once the human is back');
+    assert.equal(modelBack.map.needsYou, 1);
+    r.db.close();
+  });
+});
+
 describe('Delegation — explicit entrustment, denial still king', () => {
   test('covered action runs without interruption and leaves forensic trail', () => {
     const r = runtime();

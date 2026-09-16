@@ -66,8 +66,14 @@ function heldSince(exec: Execution, now: number): number | null {
   return null;
 }
 
-/** Is this execution currently away-marked and not yet returned? */
-function awaySince(events: ConductorEvent[]): number | null {
+/**
+ * Is this execution currently away-marked and not yet returned?
+ * A human answering a decision (resolution timestamp after the mark) is
+ * itself a return signal — answering proves presence and must clear the
+ * stale away window, or a developer who resolved one thing would keep
+ * seeing a fleet-wide zero-interrupt cockpit.
+ */
+function awaySince(events: ConductorEvent[], humanReturns: number[] = []): number | null {
   let away: number | null = null;
   for (const e of events) {
     if (e.type !== 'human.intervention') continue;
@@ -79,6 +85,7 @@ function awaySince(events: ConductorEvent[]): number | null {
       away = null;
     }
   }
+  if (away != null && humanReturns.some((t) => t > away)) return null;
   return away;
 }
 
@@ -341,8 +348,13 @@ export function buildAttentionModel(input: AttentionModelInput): AttentionModel 
   const execById = new Map(executions.map((e) => [e.id, e]));
   const pendingExecIds = new Set(decisions.filter((d) => d.status === 'pending').map((d) => d.executionId));
 
-  const anyAway = executions.some((e) =>
-    awaySince(events.filter((ev) => ev.executionId === e.id)) != null,
+  // "The human is back" is global: answering a decision anywhere (or any
+  // non-away human intervention) ends every away window plane-wide.
+  const humanReturns = decisions
+    .map((d) => (d.resolution ? d.resolution.resolvedAt : null))
+    .filter((t): t is number => t != null);
+  const anyAway = executions.some(
+    (e) => awaySince(events.filter((ev) => ev.executionId === e.id), humanReturns) != null,
   );
 
   const raw = [
