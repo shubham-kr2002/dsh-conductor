@@ -6,6 +6,11 @@
  * repositories, DecisionQueue, TakeoverService and derivations. No state
  * lives in the browser; the page is a window onto the database.
  *
+ * The Phase-10 surface is an ATTENTION COCKPIT: /api/attention runs the
+ * durable rows through buildAttentionModel (on demand, never hot-path) and
+ * serves ordered, sectioned items with their priority facts; the delegation
+ * endpoints expose exactly the authority the developer chose to entrust.
+ *
  * Live updates: cheapest propagation that works across processes — a poll
  * of a one-row fingerprint query every ~900ms pushed over Server-Sent
  * Events, plus an in-process nudge via manager.subscribe. No Redis, no
@@ -22,12 +27,19 @@ import { randomUUID } from 'node:crypto';
 import { createRuntime, type ConductorRuntime } from '../cli/commands.js';
 import type { Execution } from '../domain/execution.js';
 import type { ConductorDecision } from '../types/decision.js';
+import type { ConductorEvent } from '../types/event.js';
+import type { Delegation } from '../types/delegation.js';
+import type { PolicyCategory } from '../types/policy.js';
 import { computeAttentionMetrics, type AttentionMetrics } from '../summary/attention-metrics.js';
 import { condenseTimeline, type TimelineEntry } from '../summary/timeline.js';
 import { statusLanguage, decisionStatusLabel } from '../summary/status-language.js';
 import { buildAwaySummary, type AwaySummary } from '../summary/away-mode.js';
 import { deriveDecisionQuality, rollupDecisionQuality } from '../decision/decision-quality.js';
 import { decisionPriority } from '../decision/decision-queue.js';
+import { buildAttentionModel, type AttentionModel } from '../attention/attention-orchestrator.js';
+import { dispositionLanguage, priorityFacts } from '../attention/attention-priority.js';
+import { autonomousHighlights, explainNonInterruption } from '../attention/non-interruption-why.js';
+import { DEFAULT_POLICY_RULES } from '../policy/policy-engine.js';
 
 export interface ConductorUiOptions {
   /** SQLite file shared with the mounted plugin and the CLI. */
@@ -41,6 +53,14 @@ export interface ConductorUiOptions {
   pollMs?: number;
   runtime?: ConductorRuntime;
   now?: () => number;
+  /**
+   * Derive the P10 attention model per /api/state call (drives the cockpit's
+   * map counts + load chip). Default true. Control-surface tests written
+   * against the P9 shape pass `attention: false` to keep state() free of
+   * model semantics (a critical item, not a held run, is what answers
+   * needsYou there). /api/attention always remains available.
+   */
+  attention?: boolean;
 }
 
 export interface ConductorUiServer {
@@ -93,6 +113,14 @@ interface DecisionView {
   isQuestion: boolean;
 }
 
+/** A row of the "allowed autonomously" forensic list (P10, detail drawer). */
+interface AutonomousRow {
+  event: string;
+  type: string;
+  at: number;
+  whyNotInterrupted: ReturnType<typeof explainNonInterruption>;
+}
+
 interface DetailView extends CardView {
   timeline: TimelineEntry[];
   decisions: DecisionView[];
@@ -103,9 +131,25 @@ interface DetailView extends CardView {
   completedWork: string[];
   risks: string[];
   qualityRollup: ReturnType<typeof rollupDecisionQuality>;
+  /** Recent actions that passed WITHOUT claiming human time, each explained. */
+  autonomous: AutonomousRow[];
+  /** Standing delegations that currently cover THIS execution. */
+  delegations: Array<Record<string, unknown>>;
 }
 
 const nowFn = () => Date.now();
+
+/** Categories a human may delegate: the policy categories plus 'any'. */
+const DELEGABLE_CATEGORIES = new Set<string>([
+  'any',
+  'filesystem',
+  'shell',
+  'dependencies',
+  'git',
+  'deployment',
+  'credentials',
+  'production_resources',
+]);
 
 export async function startConductorUi(options: ConductorUiOptions): Promise<ConductorUiServer> {
   const host = options.host ?? '127.0.0.1';
@@ -124,6 +168,8 @@ export async function startConductorUi(options: ConductorUiOptions): Promise<Con
   let closed = false;
 
   // ── fingerprint: one cheap aggregate query, safe on the hot path ──
+  // P10: delegations change what the cockpit shows (covers, offers, the
+  // popover count), so grants and revocations must nudge the stream too.
   const fpStmt = runtime.db.raw.prepare(`
     SELECT
       (SELECT COUNT(*) FROM execution_events) AS e,
@@ -132,7 +178,10 @@ export async function startConductorUi(options: ConductorUiOptions): Promise<Con
       (SELECT COUNT(*) FROM decisions)        AS d,
       (SELECT MAX(updated_at) FROM decisions) AS du,
       (SELECT COUNT(*) FROM decisions WHERE consumed_at IS NOT NULL) AS dc,
-      (SELECT COUNT(*) FROM takeovers)        AS t
+      (SELECT COUNT(*) FROM takeovers)        AS t,
+      (SELECT COUNT(*) FROM delegations)      AS dl,
+      (SELECT COUNT(*) FROM delegations WHERE revoked_at IS NOT NULL) AS drv,
+      (SELECT MAX(granted_at) FROM delegations) AS dlg
   `);
   function fingerprint(): string {
     const row = (fpStmt.get as () => unknown)() as Record<string, number | null>;
@@ -227,7 +276,81 @@ export async function startConductorUi(options: ConductorUiOptions): Promise<Con
     };
   }
 
+  // ── attention model (P10) — pure derivation over durable rows ──
+
+  /** Recent bounded events across ALL active executions (observations feed the batch pass). */
+  function attentionEvents(executions: Execution[]): ConductorEvent[] {
+    const out: ConductorEvent[] = [];
+    for (const e of executions) {
+      if (e.isTerminal()) continue;
+      for (const ev of runtime.eventRepo.listByExecution(e.id, { limit: 120 })) out.push(ev);
+    }
+    return out;
+  }
+
+  function buildModel(now = nowFn()): AttentionModel {
+    const executions = runtime.execRepo.list({});
+    const decisions = runtime.decisionRepo.list({});
+    return buildAttentionModel({
+      executions,
+      decisions,
+      events: attentionEvents(executions),
+      now,
+    });
+  }
+
+  const ruleCategory = ((map) => (ruleId: string): PolicyCategory | undefined => map.get(ruleId))(
+    new Map(DEFAULT_POLICY_RULES.map((r) => [r.id, r.category])),
+  );
+
+  /** A JSON-safe copy: no class instances, no undefined, no live references. */
+  function plain<T>(value: T): T {
+    return JSON.parse(JSON.stringify(value)) as T;
+  }
+
+  function attentionView(): object {
+    const now = nowFn();
+    const model = buildModel(now);
+    const items = model.items.map((c) => {
+      const lang = dispositionLanguage(c.disposition);
+      return {
+        ...plain(c),
+        facts: priorityFacts(c, now),
+        section: lang.section,
+        label: lang.label,
+        verb: lang.verb,
+      };
+    });
+    const delegations = runtime.delegations.list({ active: true, now }).map(plain);
+    const suggestions = runtime.delegations
+      .suggestions({ decisions: runtime.decisionRepo.list({}), ruleCategory })
+      .map(plain);
+    return {
+      model: {
+        generatedAt: model.generatedAt,
+        map: plain(model.map),
+        items,
+        budgetDemoted: [...model.budgetDemoted],
+      },
+      delegations,
+      suggestions,
+    };
+  }
+
+  /** Cheap map for /api/state — computed once per call, reused by the queue. */
+  function attentionState(model: AttentionModel): object {
+    return {
+      load: { level: model.map.load.level, reasons: [...model.map.load.reasons] },
+      needsYou: model.map.needsYou,
+      waiting: model.map.waiting,
+      watching: model.map.watching,
+      working: model.map.working,
+      agents: model.map.agents,
+    };
+  }
+
   function stateView(): object {
+    const model = options.attention === false ? null : buildModel();
     const executions = runtime.execRepo.list({});
     const pendings = pendingByExec();
     const cards = executions.map((e) => cardFor(e, pendings.get(e.id) ?? []));
@@ -246,13 +369,16 @@ export async function startConductorUi(options: ConductorUiOptions): Promise<Con
       now: nowFn(),
       executions: cards,
       attention: {
-        working: active.length,
-        needsYou: needsYou.length,
+        // P9 keys stay field-compatible; when derived, the same keys answer
+        // in attention-map terms (sections, not card heuristics).
+        working: model ? model.map.working : active.length,
+        needsYou: model ? model.map.needsYou : needsYou.length,
         pendingDecisions: allDecisions.filter((d) => d.status === 'pending').length,
         totalMs: totals.totalMs,
         humanMs: totals.humanMs,
         autonomousMs: Math.max(0, totals.totalMs - totals.humanMs),
         attentionRatio: totals.totalMs > 0 ? totals.humanMs / totals.totalMs : 0,
+        ...(model ? attentionState(model) : {}),
       },
       queue: allDecisions
         .slice()
@@ -260,6 +386,37 @@ export async function startConductorUi(options: ConductorUiOptions): Promise<Con
         .slice(0, 60)
         .map((d) => decisionView(d, executions.find((e) => e.id === d.executionId)?.goal ?? d.executionId)),
       quality: rollupDecisionQuality(allDecisions),
+    };
+  }
+
+  /** One honest line naming what an event let happen. */
+  function describeEvent(e: ConductorEvent): string {
+    const p = e.payload as Record<string, unknown>;
+    const args = (p.arguments as Record<string, unknown> | undefined) ?? {};
+    const command = p.command ?? args.command;
+    if (typeof command === 'string' && command !== '') {
+      return command.length > 80 ? `ran \`${command.slice(0, 80)}…\`` : `ran \`${command}\``;
+    }
+    if (p.testName) return `test \`${String(p.testName)}\``;
+    if (p.toolName) return `used tool \`${String(p.toolName)}\``;
+    return e.type;
+  }
+
+  function jsonDelegation(d: Delegation): Record<string, unknown> {
+    return {
+      id: d.id,
+      scope: d.scope,
+      executionId: d.executionId,
+      category: d.category,
+      resourcePattern: d.resourcePattern,
+      authority: d.authority,
+      origin: d.origin,
+      grantedBy: d.grantedBy,
+      grantedAt: d.grantedAt,
+      expiresAt: d.expiresAt,
+      revokedAt: d.revokedAt,
+      revokedBy: d.revokedBy,
+      ...(d.note !== undefined ? { note: d.note } : {}),
     };
   }
 
@@ -271,6 +428,30 @@ export async function startConductorUi(options: ConductorUiOptions): Promise<Con
     const card = cardFor(exec, pending);
     const events = runtime.eventRepo.listByExecution(execId, { limit: 500 });
     const takeovers = runtime.takeoverRepo.listByExecution(execId);
+    // P10: recent actions that ran WITHOUT interrupting, each explained from
+    // persisted facts; for delegated rows, resolve the covering delegation.
+    const autonomous: AutonomousRow[] = autonomousHighlights(events, { limit: 5 })
+      .slice()
+      .reverse()
+      .map((e) => {
+        const delegationId = (e.payload as Record<string, unknown>).delegationId;
+        const delegation =
+          e.type === 'policy.delegated' && typeof delegationId === 'string'
+            ? runtime.delegationRepo.findById(delegationId)
+            : null;
+        return {
+          event: describeEvent(e),
+          type: e.type,
+          at: e.timestamp,
+          whyNotInterrupted: explainNonInterruption(e, {
+            policy: runtime.manager.policyEngine,
+            delegation,
+          }),
+        };
+      });
+    const activeDelegations = runtime.delegationRepo
+      .listActive(nowFn(), execId)
+      .map(jsonDelegation);
     let away: DetailView['away'] | undefined;
     const lastAway = [...events].reverse().find((e) => e.type === 'human.intervention' && (e.payload as Record<string, unknown>).action === 'mark_away');
     if (lastAway) {
@@ -298,6 +479,8 @@ export async function startConductorUi(options: ConductorUiOptions): Promise<Con
       completedWork: exec.completedWork.slice(-10),
       risks: exec.risks,
       qualityRollup: rollupDecisionQuality(all),
+      autonomous,
+      delegations: activeDelegations,
     };
   }
 
@@ -380,6 +563,57 @@ export async function startConductorUi(options: ConductorUiOptions): Promise<Con
     const path = url.pathname;
     try {
       if (path === '/api/state' && req.method === 'GET') return json(res, 200, stateView());
+      if (path === '/api/attention' && req.method === 'GET') return json(res, 200, attentionView());
+      if (path === '/api/delegate' && req.method === 'POST') {
+        const body = await readBody(req);
+        const scope = body.scope === 'execution' ? 'execution' : body.scope === 'workspace' ? 'workspace' : null;
+        if (!scope) return json(res, 400, { error: "scope must be 'execution' | 'workspace'" });
+        const category = String(body.category ?? '');
+        if (!DELEGABLE_CATEGORIES.has(category)) {
+          return json(res, 400, { error: `unknown category: ${category || '(missing)'}` });
+        }
+        const delegation = runtime.delegations.grant(
+          {
+            scope,
+            category: category as PolicyCategory | 'any',
+            ...(typeof body.resourcePattern === 'string' && body.resourcePattern !== ''
+              ? { resourcePattern: body.resourcePattern }
+              : {}),
+            ...(typeof body.executionId === 'string' && body.executionId !== ''
+              ? { executionId: body.executionId }
+              : {}),
+            grantedBy: typeof body.grantedBy === 'string' && body.grantedBy !== '' ? body.grantedBy : 'developer',
+            ...(typeof body.ttlMs === 'number' && body.ttlMs > 0 ? { ttlMs: body.ttlMs } : {}),
+            ...(typeof body.note === 'string' && body.note !== '' ? { note: body.note } : {}),
+          },
+          nowFn(),
+        );
+        return json(res, 200, { ok: true, delegation: jsonDelegation(delegation) });
+      }
+      if (path === '/api/delegations' && req.method === 'GET') {
+        const now = nowFn();
+        const showAll = url.searchParams.get('all') != null;
+        const list = showAll
+          ? runtime.delegations.list({ now })
+          : runtime.delegations.list({ active: true, now });
+        return json(
+          res,
+          200,
+          {
+            delegations: list.map((d) => ({
+              ...jsonDelegation(d),
+              active: d.revokedAt == null && (d.expiresAt == null || d.expiresAt > now),
+            })),
+          },
+        );
+      }
+      const revokeDl = /^\/api\/delegations\/([^/]+)\/revoke$/.exec(path);
+      if (revokeDl && req.method === 'POST') {
+        const body = await readBody(req);
+        const by = typeof body.by === 'string' && body.by !== '' ? body.by : 'developer';
+        const d = runtime.delegations.revoke(decodeURIComponent(revokeDl[1]!), by, nowFn());
+        return json(res, 200, { ok: true, delegation: jsonDelegation(d) });
+      }
       if (path === '/stream' && req.method === 'GET') {
         res.writeHead(200, {
           'content-type': 'text/event-stream',

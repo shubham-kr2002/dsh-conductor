@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Conductor — mission control</title>
+  <title>Conductor — attention cockpit</title>
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
@@ -13,22 +13,42 @@
       <span class="live" id="live-dot" title="event stream"></span>
     </div>
     <div class="attention-line" id="attention-line">connecting…</div>
-    <div class="budget" id="budget-line"></div>
-    <div class="l1-actions">
-      <button id="btn-away" class="ghost" title="Mark the moment you leave; the summary on return starts here">Mark away</button>
+    <div class="l1-right">
+      <div class="load-chip" id="load-chip" title="attention load, with its factual basis"></div>
+      <button id="btn-deleg" class="ghost slim" title="Standing delegations — what you have entrusted to the agents">Delegations (<span id="deleg-n">0</span>)</button>
+      <button id="btn-away" class="ghost" title="Mark the moment you leave; the summary on return starts here">Away</button>
       <button id="btn-refresh" class="ghost" title="Re-read the control plane">↻</button>
     </div>
+    <div class="budget" id="budget-line"></div>
   </header>
 
+  <div id="deleg-pop" hidden></div>
+
   <main>
-    <section id="executions" aria-label="Executions">
-      <h2 class="sec">Agents in flight</h2>
-      <div id="cards" class="stack"></div>
+    <section id="needs-you" aria-label="Needs you">
+      <h2 class="sec">Needs you <span id="ny-count" class="count"></span></h2>
+      <div id="ny-list" class="stack"></div>
     </section>
-    <section id="queue" aria-label="Decision queue">
-      <h2 class="sec">Needs your judgment <span id="queue-count" class="count"></span></h2>
-      <div id="decision-list" class="stack"></div>
-      <div id="quality-strip" class="quality"></div>
+
+    <section id="waiting" aria-label="Safely waiting">
+      <h2 class="sec">Waiting</h2>
+      <div id="offer-strip"></div>
+      <div id="wt-list" class="stack"></div>
+    </section>
+
+    <section id="watching" aria-label="Watching">
+      <h2 class="sec">Watching</h2>
+      <div id="wc-list" class="stack"></div>
+    </section>
+
+    <section id="working" aria-label="Working">
+      <div id="wk-summary" class="wk-summary" role="button" tabindex="0"></div>
+      <div id="wk-list" class="stack collapsed"></div>
+    </section>
+
+    <section id="logged" aria-label="Recorded">
+      <div id="lg-summary" class="lg-summary" role="button" tabindex="0"></div>
+      <div id="lg-list" class="stack collapsed"></div>
     </section>
   </main>
 
