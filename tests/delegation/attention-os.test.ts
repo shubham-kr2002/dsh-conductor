@@ -236,9 +236,15 @@ describe('Delegation — explicit entrustment, denial still king', () => {
       'denial newer than the grant shadows the delegation — explicit human authority wins',
     );
 
-    // and a subsequent explicit approval lifts the shadow again
-    r.decisionRepo.save({ ...newer, status: 'accepted', resolution: { ...newer.resolution!, status: 'accepted', resolvedAt: deniedAt + 400_000 } });
-    assert.ok(r.delegations.covers({ executionId: b.id, category: 'deployment', subject, now: deniedAt + 500_000 }));
+    // and a subsequent explicit approval lifts the shadow again. A NEWER
+    // verdict is a NEWER decision row — settled rows are immutable (the
+    // P10 guarded upsert forbids rewriting a resolved verdict).
+    r.decisionRepo.save({
+      ...newer, id: `${newer.id}-approved`, status: 'accepted',
+      resolution: { status: 'accepted', resolvedAt: deniedAt + 400_000, resolvedBy: 'dev' },
+    });
+    assert.ok(r.delegations.covers({ executionId: b.id, category: 'deployment', subject, now: deniedAt + 500_000 }),
+      'the newest human verdict governs');
     r.db.close();
   });
 

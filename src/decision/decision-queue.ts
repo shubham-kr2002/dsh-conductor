@@ -216,11 +216,15 @@ export class DecisionQueue {
     };
     decision.updatedAt = now;
     this.decisionRepo.save(decision);
+    // The upsert refuses to clobber a settled verdict: re-read so a caller
+    // that lost a concurrent-resolve race observes (and resumes from) the
+    // WINNER's resolution, never its own.
+    const settled = this.decisionRepo.findById(id) ?? decision;
 
     if (opts.resumeExecution !== false) {
-      this.maybeResume(decision.executionId);
+      this.maybeResume(settled.executionId);
     }
-    return decision;
+    return settled;
   }
 
   /**
@@ -257,9 +261,10 @@ export class DecisionQueue {
     decision.updatedAt = Date.now();
     decision.resolution = undefined;
     this.decisionRepo.save(decision);
-    this.maybeResume(decision.executionId);
+    const settled = this.decisionRepo.findById(id) ?? decision;
+    this.maybeResume(settled.executionId);
     void reason;
-    return decision;
+    return settled;
   }
 
   /**

@@ -154,14 +154,16 @@ export function dedupeCandidates(candidates: AttentionCandidate[]): AttentionCan
     const existing = byId.get(c.id);
     const key = `${c.kind}|${c.executionId}|${c.category}|${c.title}`;
     const twin = byKey.get(key);
-    // Only collapse a genuine duplicate: same candidate id, refIds that
-    // actually overlap, or a re-delivery of a decision (decisions are
-    // singletons per subject; observations sharing a title are DISTINCT
-    // rows and must survive for clustering to group them).
+    // Only collapse a genuine duplicate: same candidate id or overlapping
+    // refIds. Two DISTINCT rows (a second question under the same generic
+    // title, a same-titled failure storm) are never merged away — a
+    // re-delivered decision shares its candidate id anyway (adversarial
+    // matrix note: distinct pending items must stay individually
+    // resolvable).
     const overlaps =
       twin !== undefined &&
       twin.id !== c.id &&
-      (c.kind === 'decision' || twin.refIds.some((r) => c.refIds.includes(r)));
+      twin.refIds.some((r) => c.refIds.includes(r));
     if (existing || overlaps) {
       const target = existing ?? twin!;
       target.refIds = [...new Set([...target.refIds, ...c.refIds])];

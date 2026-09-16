@@ -98,6 +98,11 @@ export class SqliteDecisionRepository implements IDecisionRepository {
         created_at, updated_at, expires_at, source_event_id, dedupe_key, subject, consumed_at,
         why_json, quality_json
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      -- Concurrency-safe upsert (P10 adversarial matrix, #2c/#2d): aggregate
+      -- saves may only advance a row, never rewind or clobber settled truth.
+      -- Once resolved (status != 'pending') the verdict is FROZEN against any
+      -- save from a stale reader; consumed_at is only ever set, never unset;
+      -- exactly-once claims stay owned by tryConsume's conditional UPDATE.
       ON CONFLICT(id) DO UPDATE SET
         title = excluded.title,
         question = excluded.question,
@@ -105,16 +110,16 @@ export class SqliteDecisionRepository implements IDecisionRepository {
         impact = excluded.impact,
         urgency = excluded.urgency,
         confidence = excluded.confidence,
-        status = excluded.status,
+        status = CASE WHEN decisions.status = 'pending' THEN excluded.status ELSE decisions.status END,
         options_json = excluded.options_json,
         recommendation = excluded.recommendation,
-        resolution_json = excluded.resolution_json,
+        resolution_json = CASE WHEN decisions.status = 'pending' THEN excluded.resolution_json ELSE decisions.resolution_json END,
         updated_at = excluded.updated_at,
         expires_at = excluded.expires_at,
         source_event_id = excluded.source_event_id,
         dedupe_key = excluded.dedupe_key,
         subject = excluded.subject,
-        consumed_at = excluded.consumed_at,
+        consumed_at = COALESCE(decisions.consumed_at, excluded.consumed_at),
         why_json = excluded.why_json,
         quality_json = excluded.quality_json
     `);
