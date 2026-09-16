@@ -279,7 +279,9 @@ function candidatesFromEvents(events: ConductorEvent[], execById: Map<string, Ex
       });
     } else if (e.type === 'policy.delegated') {
       out.push({
-        id: `cand:delegated:${e.id}`,
+        // One logical action = one candidate even when the adapter wrote
+        // two forensic rows (tool.called + command.started for one call).
+        id: `cand:delegated:${String(payload.delegationId ?? e.id)}:${String(payload.command ?? payload.toolName ?? e.id)}`,
         executionId: e.executionId,
         goal: exec.goal,
         agentId: exec.agent.id,

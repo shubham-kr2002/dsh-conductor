@@ -111,7 +111,8 @@ export function clusterObservations(
   const clusters = new Map<string, AttentionCandidate>();
 
   for (const c of candidates) {
-    if (c.kind !== 'observation') {
+    if (c.kind !== 'observation' || c.category === 'delegated-activity') {
+      // Ambient delegated activity is context, not a storm to group.
       out.push(c);
       continue;
     }
@@ -153,14 +154,24 @@ export function dedupeCandidates(candidates: AttentionCandidate[]): AttentionCan
     const existing = byId.get(c.id);
     const key = `${c.kind}|${c.executionId}|${c.category}|${c.title}`;
     const twin = byKey.get(key);
-    if (existing || (twin && twin.id !== c.id)) {
+    // Only collapse a genuine duplicate: same candidate id, refIds that
+    // actually overlap, or a re-delivery of a decision (decisions are
+    // singletons per subject; observations sharing a title are DISTINCT
+    // rows and must survive for clustering to group them).
+    const overlaps =
+      twin !== undefined &&
+      twin.id !== c.id &&
+      (c.kind === 'decision' || twin.refIds.some((r) => c.refIds.includes(r)));
+    if (existing || overlaps) {
       const target = existing ?? twin!;
       target.refIds = [...new Set([...target.refIds, ...c.refIds])];
+      target.clusterIds = [...new Set([...target.clusterIds, ...c.clusterIds])];
       dropped.push(c.id);
       continue;
     }
     byId.set(c.id, c);
     byKey.set(key, c);
   }
+  void dropped;
   return [...byId.values()];
 }

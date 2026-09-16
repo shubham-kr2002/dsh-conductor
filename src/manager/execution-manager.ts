@@ -213,7 +213,9 @@ export class ExecutionManager {
         id: `evt-${randomUUID()}`,
         executionId: enriched.executionId,
         type: 'policy.delegated',
-        timestamp: Date.now(),
+        // Follows the observed event's clock (deterministic for replays &
+        // fictional-clock demos), stamped immediately after its cause.
+        timestamp: Math.max(enriched.timestamp + 1, enriched.timestamp),
         payload: {
           sourceEventId: enriched.id,
           delegationId: delegated.delegation.id,

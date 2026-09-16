@@ -151,6 +151,24 @@ describe('Away semantics — honest and self-clearing', () => {
   });
 });
 
+  test('failure storm through the real pipeline yields ONE batched cluster with member ids', () => {
+    const r = runtime();
+    const a = exec(r, 'orion', 'test coverage');
+    for (let i = 0; i < 3; i++) {
+      r.manager.processEvent(
+        EventAdapter.createEvent(a.id, 'test.failed', { test: `suite-${String(i)}`, failures: 2 }),
+      );
+    }
+    const model = loadModel(r);
+    assert.equal(r.decisionRepo.list({}).length, 0, 'storm never interrupts');
+    const clusters = model.items.filter((c) => c.disposition === 'batch');
+    assert.equal(clusters.length, 1, 'storm collapses to one cockpit item');
+    assert.ok(clusters[0]!.clusterIds.length >= 1, 'cluster names its folded members');
+    assert.ok(clusters[0]!.refIds.length >= 2, 'every underlying row still referenced');
+    assert.equal(model.map.needsYou, 0);
+    r.db.close();
+  });
+
 describe('Delegation — explicit entrustment, denial still king', () => {
   test('covered action runs without interruption and leaves forensic trail', () => {
     const r = runtime();
