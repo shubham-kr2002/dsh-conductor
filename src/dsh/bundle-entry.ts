@@ -41,6 +41,10 @@ export function apply(ctx: CordisCtx, config: Record<string, unknown> | undefine
     ...(dbPath ? { dbPath } : {}),
     autoAnswerRoutine: config?.autoAnswerRoutine === true,
     completeOnIdle: config?.completeOnIdle !== false,
+    // DSH headless blocks the turn while a hold is pending; the operator's
+    // resolve lands between runs — adoption carries the execution (and its
+    // approval tokens) across those process boundaries.
+    reuseOpenExecution: true,
     constraints: Array.isArray(config?.constraints)
       ? (config.constraints as unknown[]).map(String)
       : undefined,

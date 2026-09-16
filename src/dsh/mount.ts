@@ -27,6 +27,14 @@ export interface ConductorMountOptions {
   completeOnIdle?: boolean;
   /** Extra hard constraints recorded on the execution. */
   constraints?: string[];
+  /**
+   * Re-attach to the workspace's newest OPEN execution instead of always
+   * starting a fresh one. Headless DSH ends the run when the gate holds, so
+   * the human's retry arrives as a NEW process over the SAME execution —
+   * that is where cross-process approval tokens live. Default false (P8
+   * semantics unchanged); the bundle entry turns it on.
+   */
+  reuseOpenExecution?: boolean;
 }
 
 export interface ConductorMount {
@@ -61,10 +69,16 @@ export function mountConductor(config: ConductorMountOptions | ConductorPluginCo
     autoAnswerRoutine: cfg.autoAnswerRoutine ?? false,
   });
 
-  const exec = bridge.startExecution(cfg.goal ?? 'Mounted DSH session', {
-    workspaceRoot,
-    constraints: cfg.constraints,
-  });
+  const open = cfg.reuseOpenExecution
+    ? manager.executionRepo.findActiveByWorkspace(workspaceRoot)
+    : null;
+  const exec =
+    open ??
+    bridge.startExecution(cfg.goal ?? 'Mounted DSH session', {
+      workspaceRoot,
+      constraints: cfg.constraints,
+    });
+  if (open) bridge.adoptExecution(open.id);
 
   const sessionEventToBridge = (evt: HostSessionEvent): void => {
     switch (evt.type) {

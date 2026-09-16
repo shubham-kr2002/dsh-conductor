@@ -16,6 +16,8 @@ export interface IExecutionRepository {
   save(execution: Execution): void;
   findById(id: string): Execution | null;
   list(filter?: ExecutionFilter): Execution[];
+  /** Newest non-terminal execution whose state.workspaceRoot matches. */
+  findActiveByWorkspace(workspaceRoot: string): Execution | null;
   delete(id: string): boolean;
   count(status?: ExecutionStatus): number;
 }
@@ -77,6 +79,29 @@ export class SqliteExecutionRepository implements IExecutionRepository {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Adoption lookup: the newest open execution for a workspace. A DSH run
+   * that was blocked by a paused run must be able to RESUME the same
+   * execution (its approval tokens live there) when relaunched.
+   */
+  public findActiveByWorkspace(workspaceRoot: string): Execution | null {
+    const stmt = this.db.raw.prepare(`
+      SELECT id, goal, status, state_json, created_at, updated_at, completed_at
+      FROM executions
+      WHERE status IN ('STARTING', 'RUNNING', 'WAITING', 'PAUSED', 'BLOCKED')
+      ORDER BY updated_at DESC
+    `);
+    for (const row of stmt.all() as unknown as ExecutionRow[]) {
+      try {
+        const state = JSON.parse(row.state_json) as ExecutionState;
+        if (state.workspace?.root === workspaceRoot) return new Execution(state);
+      } catch {
+        /* skip unreadable state */
+      }
+    }
+    return null;
   }
 
   public list(filter: ExecutionFilter = {}): Execution[] {

@@ -91,6 +91,15 @@ export class ConductorBridge {
     return exec;
   }
 
+  /**
+   * Attach this bridge to an ALREADY OPEN execution (adoption on remount).
+   * Deliberately does NOT clear a pause: the pending decisions on that
+   * execution still gate every consequential action.
+   */
+  public adoptExecution(executionId: string): void {
+    this._activeExecutionId = executionId;
+  }
+
   public bindHostKey(hostKey: string, executionId: string): void {
     this._byHostKey.set(hostKey, executionId);
     this._activeExecutionId = executionId;
