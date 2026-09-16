@@ -51,6 +51,33 @@ describe('SQLite Repositories', () => {
     assert.equal(reloaded.isTerminal(), true);
   });
 
+  test('event listByExecution: limit without offset returns NEWEST N chronologically', () => {
+    const db = new ConductorDatabase({ path: ':memory:' });
+    const execRepo = new SqliteExecutionRepository(db);
+    const eventRepo = new SqliteEventRepository(db);
+    const host = Execution.create({ goal: 'limit probe', workspaceRoot: '/r' });
+    execRepo.save(host);
+    for (let i = 1; i <= 10; i++) {
+      const evt: ConductorEvent = {
+        id: `evt-${String(i).padStart(2, '0')}`,
+        executionId: host.id,
+        type: 'file.changed',
+        timestamp: 1_000 + i,
+        payload: { path: `f${String(i)}` },
+        source: 'conductor',
+      };
+      eventRepo.save(evt);
+    }
+    const tail = eventRepo.listByExecution(host.id, { limit: 3 });
+    assert.deepEqual(tail.map((e) => e.id), ['evt-08', 'evt-09', 'evt-10']);
+    assert.ok(tail[0]!.timestamp < tail[2]!.timestamp, 'returned in chronological order');
+    // positional pagination (explicit offset) still counts from the start
+    const page = eventRepo.listByExecution(host.id, { limit: 3, offset: 2 });
+    assert.deepEqual(page.map((e) => e.id), ['evt-03', 'evt-04', 'evt-05']);
+    // no limit = full history, unchanged
+    assert.equal(eventRepo.listByExecution(host.id).length, 10);
+  });
+
   test('lists and filters executions correctly', () => {
     const db = new ConductorDatabase({ path: ':memory:' });
     const repo = new SqliteExecutionRepository(db);

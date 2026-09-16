@@ -61,18 +61,31 @@ export class SqliteEventRepository implements IEventRepository {
       params.push(filter.type);
     }
 
-    sql += ' ORDER BY timestamp ASC';
+    // Deterministic tie-break on id.
+    if (filter.limit !== undefined && filter.offset === undefined) {
+      // "newest N" without offset: take the tail chronologically.
+      sql += ' ORDER BY timestamp DESC, id DESC LIMIT ?';
+      params.push(filter.limit);
+      const tail = this.query(sql, params);
+      tail.reverse();
+      return tail;
+    }
+
+    sql += ' ORDER BY timestamp ASC, id ASC';
 
     if (filter.limit !== undefined) {
       sql += ' LIMIT ?';
       params.push(filter.limit);
-
       if (filter.offset !== undefined) {
         sql += ' OFFSET ?';
         params.push(filter.offset);
       }
     }
 
+    return this.query(sql, params);
+  }
+
+  private query(sql: string, params: (string | number)[]): ConductorEvent[] {
     const stmt = this.db.raw.prepare(sql);
     const rows = (stmt.all as (...args: (string | number)[]) => unknown[])(...params) as unknown as EventRow[];
 

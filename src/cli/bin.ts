@@ -11,7 +11,20 @@ import {
   renderHistory,
   renderDecisions,
   renderDecisionDetail,
+  renderAttentionCockpit,
+  renderAttentionWhyDecision,
+  renderAttentionWhyEvent,
+  renderDelegations,
+  renderDelegationGrant,
+  renderDelegationOffers,
+  parseSinceOption,
+  POLICY_CATEGORIES,
 } from './commands.js';
+import { attentionFromRuntime, loadAttentionRows, renderAttentionHistory } from '../summary/attention-history.js';
+import { buildAttentionModel } from '../attention/attention-orchestrator.js';
+import { explainNonInterruption } from '../attention/non-interruption-why.js';
+import { DEFAULT_POLICY_RULES } from '../policy/policy-engine.js';
+import type { Delegation } from '../types/delegation.js';
 import { renderAwaySummary } from '../summary/away-mode.js';
 import { computeAttentionMetrics, renderAttentionMetrics, formatDuration } from '../summary/attention-metrics.js';
 import { condenseTimeline } from '../summary/timeline.js';
@@ -472,6 +485,171 @@ program
     }
     console.log(`control plane database: ${dbPath}`);
     console.log('Next: mount the plugin above into DSH, start an execution, run `conductor ui`.');
+  });
+
+// ---------------------------------------------------------------------------
+// Phase 10 — attention cockpit, why, history, and delegation commands.
+// (Appended; every command above is untouched.)
+// ---------------------------------------------------------------------------
+
+program
+  .command('attention [executionId]')
+  .description('Attention cockpit: where your focus should go across the fleet')
+  .option('--all', 'Include recorded items (delegated activity, batches)')
+  .option('--json', 'Machine-readable output: {map, items, budgetDemoted}')
+  .option('-l, --limit <number>', 'Maximum items shown per section')
+  .option('--why <id>', 'Explain one interruption (decision id) or one non-interruption (event id)')
+  .option('--history', 'Where your attention went: derived history over the window')
+  .option('--since <iso|minutes>', 'History window start: ISO datetime, or N minutes ago')
+  .action((executionId, options) => {
+    const rt = createRuntime();
+    try {
+      const now = Date.now();
+
+      if (typeof options.why === 'string' && options.why !== '') {
+        const id = options.why;
+        const decision = rt.decisionRepo.findById(id);
+        const rows = loadAttentionRows(rt, executionId ? { executionId } : {});
+        const model = buildAttentionModel({ ...rows, now });
+        if (decision) {
+          const exec = rt.execRepo.findById(decision.executionId);
+          console.log(renderAttentionWhyDecision(decision, model, rows.decisions, exec ?? null, now));
+          return;
+        }
+        const event = rows.events.find((e) => e.id === id);
+        if (!event) throw new Error(`no decision or event with id: ${id}`);
+        const payload = event.payload as Record<string, unknown>;
+        const stored = event.metadata?.attention as { ruleId?: string } | undefined;
+        const metaRule = typeof event.metadata?.ruleId === 'string' ? (event.metadata.ruleId as string) : undefined;
+        const fromPayload = typeof payload.delegationId === 'string' ? payload.delegationId : undefined;
+        const fromAttention =
+          stored?.ruleId && stored.ruleId.startsWith('delegation:')
+            ? stored.ruleId.slice('delegation:'.length)
+            : undefined;
+        const fromMeta = metaRule && metaRule.startsWith('dl-') ? metaRule : undefined;
+        const dlId = fromPayload ?? fromAttention ?? fromMeta;
+        let delegation: Delegation | null = null;
+        if (dlId) delegation = rt.delegationRepo.findById(dlId) ?? null;
+        const w = explainNonInterruption(event, { policy: rt.manager.policyEngine, delegation });
+        console.log(renderAttentionWhyEvent(event, w));
+        return;
+      }
+
+      if (options.history) {
+        let since: number | undefined;
+        try {
+          since = parseSinceOption(options.since, now);
+        } catch (err) {
+          console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+          process.exit(1);
+        }
+        const { history } = attentionFromRuntime(rt, now, since != null ? { since } : {});
+        if (options.json) console.log(JSON.stringify(history));
+        else console.log(renderAttentionHistory(history));
+        return;
+      }
+
+      const rows = loadAttentionRows(rt, executionId ? { executionId } : {});
+      const model = buildAttentionModel({ ...rows, now });
+      if (options.json) {
+        console.log(JSON.stringify({ map: model.map, items: model.items, budgetDemoted: model.budgetDemoted }));
+        return;
+      }
+      const limit = options.limit != null ? parseInt(options.limit, 10) || undefined : undefined;
+      console.log(
+        renderAttentionCockpit(model, rows.executions, rows.decisions, {
+          now,
+          all: Boolean(options.all),
+          ...(limit != null ? { limit } : {}),
+        }),
+      );
+    } catch (err) {
+      console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    } finally {
+      rt.db.close();
+    }
+  });
+
+program
+  .command('delegate <category>')
+  .description('Grant a standing delegation: covered actions run without interrupting you')
+  .option('--execution <id>', 'Scope the delegation to one execution (default: whole workspace)')
+  .option('--pattern <substr>', 'Narrow to commands/paths containing this substring')
+  .option('--hours <n>', 'Hours until expiry (default: valid until revoked)')
+  .option('--by <who>', 'Who is granting', 'developer')
+  .option('-n, --note <text>', 'Why (recorded with the delegation for the audit trail)')
+  .action((category, options) => {
+    if (!POLICY_CATEGORIES.includes(category)) {
+      console.error(`Error: unknown category "${category}". Valid categories: ${POLICY_CATEGORIES.join(', ')}`);
+      process.exit(1);
+    }
+    let ttlMs: number | undefined;
+    if (options.hours != null) {
+      const h = Number(options.hours);
+      if (!Number.isFinite(h) || h <= 0) {
+        console.error('Error: --hours must be a positive number of hours');
+        process.exit(1);
+      }
+      ttlMs = h * 3_600_000;
+    }
+    const { delegations, db } = createRuntime();
+    try {
+      const d = delegations.grant({
+        scope: options.execution ? 'execution' : 'workspace',
+        ...(options.execution ? { executionId: options.execution } : {}),
+        category: category as (typeof POLICY_CATEGORIES)[number],
+        ...(options.pattern ? { resourcePattern: String(options.pattern) } : {}),
+        grantedBy: String(options.by ?? 'developer'),
+        ...(ttlMs != null ? { ttlMs } : {}),
+        ...(options.note ? { note: String(options.note) } : {}),
+      });
+      console.log(renderDelegationGrant(d, Date.now()));
+    } catch (err) {
+      console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    } finally {
+      db.close();
+    }
+  });
+
+program
+  .command('delegations')
+  .description('List standing delegations; --suggest shows recurrence offers')
+  .option('--all', 'Include expired and revoked rows (audit view)')
+  .option('--revoke <id>', 'Revoke a delegation by id')
+  .option('--by <who>', 'Who is revoking', 'developer')
+  .option('--suggest', 'Show delegation offers built from recurring approvals (grants nothing)')
+  .action((options) => {
+    const rt = createRuntime();
+    try {
+      const now = Date.now();
+      if (typeof options.revoke === 'string' && options.revoke !== '') {
+        const d = rt.delegations.revoke(options.revoke, String(options.by ?? 'developer'), now);
+        console.log(
+          `Revoked delegation ${d.id} (by ${d.revokedBy ?? options.by}). ` +
+            'Covered actions will interrupt you again.',
+        );
+      } else {
+        const list = options.all ? rt.delegations.list() : rt.delegations.list({ active: true, now });
+        console.log(renderDelegations(list, now));
+      }
+      if (options.suggest) {
+        const ruleCategory = new Map(DEFAULT_POLICY_RULES.map((r) => [r.id, r.category]));
+        const offers = rt.delegations.suggestions({
+          decisions: rt.decisionRepo.list({}),
+          ruleCategory: (id) => ruleCategory.get(id),
+          now,
+        });
+        console.log('');
+        console.log(renderDelegationOffers(offers));
+      }
+    } catch (err) {
+      console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    } finally {
+      rt.db.close();
+    }
   });
 
 program.parse(process.argv);

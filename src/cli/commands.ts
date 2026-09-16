@@ -250,3 +250,287 @@ export function renderDecisionDetail(d: ConductorDecision): string {
   }
   return lines.join('\n');
 }
+
+// ---------------------------------------------------------------------------
+// Phase 10 — attention cockpit, explanations, and delegation rendering.
+// All derived views; existing commands above are untouched.
+// ---------------------------------------------------------------------------
+
+import type { Execution } from '../domain/execution.js';
+import type { AttentionModel } from '../attention/attention-orchestrator.js';
+import type { AttentionCandidate } from '../attention/attention-candidate.js';
+import { dispositionLanguage, priorityFacts } from '../attention/attention-priority.js';
+import type { WhyNotInterrupted } from '../attention/non-interruption-why.js';
+import type { Delegation } from '../types/delegation.js';
+import type { PolicyCategory } from '../types/policy.js';
+import type { DecisionQuality } from '../types/decision.js';
+import { deriveDecisionQuality } from '../decision/decision-quality.js';
+import { formatDuration } from '../summary/attention-metrics.js';
+
+/** Categories a human may explicitly delegate (mirrors PolicyCategory). */
+export const POLICY_CATEGORIES: readonly PolicyCategory[] = [
+  'filesystem',
+  'shell',
+  'dependencies',
+  'git',
+  'deployment',
+  'credentials',
+  'production_resources',
+];
+
+/** `--since <iso|minutes>` → absolute timestamp (minutes = minutes ago). */
+export function parseSinceOption(raw: string | undefined, now: number): number | undefined {
+  if (raw == null || raw === '') return undefined;
+  if (/^\d+(\.\d+)?$/.test(raw)) return now - Number(raw) * 60_000;
+  const t = Date.parse(raw);
+  if (Number.isNaN(t)) throw new Error(`--since must be an ISO datetime or a number of minutes, got: ${raw}`);
+  return t;
+}
+
+type CockpitSection = 'needs-you' | 'waiting' | 'watching' | 'recorded';
+
+function renderCockpitItem(c: AttentionCandidate, now: number): string[] {
+  const lang = dispositionLanguage(c.disposition);
+  const facts = priorityFacts(c, now)
+    .map((f) => `${f.factor}=${f.value}`)
+    .join(' · ');
+  const out: string[] = [];
+  out.push(`  • [${lang.label}] ${c.title}  (${c.agentId})`);
+  out.push(`    ${c.id}`);
+  out.push(`    ${facts}`);
+  if (c.kind === 'decision' && c.refIds.length > 0) {
+    const decisionId = c.refIds[0]!;
+    out.push(
+      `    decision ${decisionId} — decide: conductor resolve ${decisionId}` +
+        ` | explain: conductor attention --why ${decisionId}`,
+    );
+  }
+  if (c.whyWaiting) out.push(`    *(${c.whyWaiting})*`);
+  return out;
+}
+
+/** The cockpit view: ordered sections over the attention model. */
+export function renderAttentionCockpit(
+  model: AttentionModel,
+  executions: Execution[],
+  decisions: ConductorDecision[],
+  opts: { now: number; all?: boolean; limit?: number },
+): string {
+  const { now } = opts;
+  const limit = opts.limit;
+  const pendingExecIds = new Set(decisions.filter((d) => d.status === 'pending').map((d) => d.executionId));
+  const HELD = new Set(['PAUSED', 'BLOCKED']);
+  const workingAgents = executions
+    .filter((e) => !e.isTerminal() && !HELD.has(e.status) && e.status !== 'TAKEN_OVER' && !pendingExecIds.has(e.id))
+    .map((e) => e.agent.id);
+
+  const sections: Record<CockpitSection, AttentionCandidate[]> = {
+    'needs-you': [],
+    waiting: [],
+    watching: [],
+    recorded: [],
+  };
+  for (const c of model.items) sections[dispositionLanguage(c.disposition).section].push(c);
+
+  const lines: string[] = [
+    '=================================================================',
+    '                      CONDUCTOR — ATTENTION                   ',
+    '=================================================================',
+    `${String(model.map.agents)} agents · ${String(model.map.needsYou)} needs you · ` +
+      `${String(model.map.waiting)} waiting · attention load ${model.map.load.level} ` +
+      `(${model.map.load.reasons.join('; ')})`,
+    '',
+  ];
+
+  const renderSection = (header: string, items: AttentionCandidate[], emptyLine: string | null): void => {
+    lines.push(header);
+    if (items.length === 0) {
+      if (emptyLine) lines.push(`  ${emptyLine}`);
+    } else {
+      const shown = limit != null && limit > 0 ? items.slice(0, limit) : items;
+      for (const c of shown) lines.push(...renderCockpitItem(c, now));
+      if (shown.length < items.length) {
+        lines.push(`  … ${String(items.length - shown.length)} more (--limit to see more)`);
+      }
+    }
+    lines.push('');
+  };
+
+  renderSection(
+    'NEEDS YOU',
+    sections['needs-you'],
+    `Nothing needs you — ${String(model.map.working)} working autonomously`,
+  );
+  renderSection('WAITING', sections.waiting, 'nothing queued');
+  renderSection('WATCHING', sections.watching, 'nothing to watch');
+  if (opts.all) renderSection('RECORDED', sections.recorded, 'nothing recorded');
+
+  lines.push('WORKING');
+  if (workingAgents.length === 0) lines.push('  no agent is running fully on its own right now');
+  else lines.push(`  ${String(workingAgents.length)} working autonomously: ${workingAgents.join(', ')}`);
+  lines.push('=================================================================');
+  return lines.join('\n');
+}
+
+/** Decision explanation: existing seven-field why + ranking facts + quality. */
+export function renderAttentionWhyDecision(
+  d: ConductorDecision,
+  model: AttentionModel,
+  allDecisions: ConductorDecision[],
+  exec: Execution | null,
+  now: number,
+): string {
+  const lines: string[] = [renderDecisionDetail(d)];
+  const candidate = model.items.find((c) => c.refIds.includes(d.id));
+  if (candidate) {
+    lines.push('  Why it is ranked here now:');
+    for (const f of priorityFacts(candidate, now)) {
+      lines.push(`    ${f.factor.padEnd(16)}${f.value}`);
+    }
+  }
+  if (d.resolution) {
+    const quality: DecisionQuality = deriveDecisionQuality(d, allDecisions, exec);
+    lines.push('  Quality (observable facts):');
+    lines.push(
+      `    answered by ${d.resolution.resolvedBy} after ${
+        quality.responseMs != null ? formatDuration(quality.responseMs) : '—'
+      }`,
+    );
+    lines.push(`    outcome: ${quality.outcome ?? '—'} | came back: ${quality.recurred ? 'YES' : 'no'}`);
+  }
+  return lines.join('\n');
+}
+
+/** Event explanation: why this did NOT interrupt you. */
+export function renderAttentionWhyEvent(e: ConductorEvent, w: WhyNotInterrupted): string {
+  const lines: string[] = [
+    '=================================================================',
+    '            CONDUCTOR — WHY THIS DID NOT INTERRUPT YOU         ',
+    '=================================================================',
+    `Action:      ${w.action}`,
+    `Event:       ${e.id} (${e.type}) at ${new Date(e.timestamp).toISOString()}`,
+    `Execution:   ${e.executionId}`,
+    w.attention
+      ? `Attention:   ${w.attention.level.toLowerCase()} / ${w.attention.action.toLowerCase()}${
+          w.attention.ruleId ? ` (rule ${w.attention.ruleId})` : ''
+        }`
+      : 'Attention:   no stored classification on this event',
+    '',
+    'Allowed because:',
+    ...w.allowedBecause.map((r) => `  • ${r}`),
+  ];
+  if (w.delegatedBy) {
+    lines.push('');
+    lines.push(
+      `Delegated by: ${w.delegatedBy.id} (category ${w.delegatedBy.category}, granted by ${w.delegatedBy.grantedBy})`,
+    );
+  }
+  lines.push('');
+  lines.push(`attention saved: ${w.attentionSaved}`);
+  lines.push('=================================================================');
+  return lines.join('\n');
+}
+
+function delegationTag(d: Delegation, now: number): 'active' | 'expired' | 'revoked' {
+  if (d.revokedAt != null) return 'revoked';
+  if (d.expiresAt != null && d.expiresAt <= now) return 'expired';
+  return 'active';
+}
+
+/** Delegation ledger (CLI `delegations`). */
+export function renderDelegations(list: Delegation[], now: number): string {
+  const lines: string[] = [
+    '=================================================================',
+    '                      CONDUCTOR — DELEGATIONS                  ',
+    '=================================================================',
+  ];
+  if (list.length === 0) {
+    lines.push('No delegations granted — every consequential action interrupts you.');
+    lines.push('Grant with:  conductor delegate <category> [--execution <id>] [--hours <n>]');
+    lines.push('=================================================================');
+    return lines.join('\n');
+  }
+  lines.push(`${String(list.length)} delegation(s):`);
+  lines.push('');
+  for (const d of [...list].sort((a, b) => a.grantedAt - b.grantedAt)) {
+    const tag = delegationTag(d, now);
+    const scope = d.scope === 'execution' ? `execution ${d.executionId}` : 'workspace';
+    lines.push(
+      `  ${d.id}  [${tag}]  ${scope}  ${d.category}${d.resourcePattern ? ` ~${d.resourcePattern}` : ''}  by ${d.grantedBy}`,
+    );
+    const expiry =
+      d.expiresAt == null
+        ? 'never expires'
+        : tag === 'expired'
+          ? `expired ${formatDuration(Math.max(0, now - d.expiresAt))} ago`
+          : `expires in ${formatDuration(Math.max(0, d.expiresAt - now))} (${new Date(d.expiresAt).toISOString()})`;
+    lines.push(
+      `      granted ${new Date(d.grantedAt).toISOString()} · ${expiry}` +
+        (d.revokedAt != null ? ` · revoked by ${d.revokedBy ?? '?'} ${new Date(d.revokedAt).toISOString()}` : ''),
+    );
+    if (d.note) lines.push(`      note: ${d.note}`);
+  }
+  lines.push('');
+  lines.push('Revoke with:  conductor delegations --revoke <id>');
+  lines.push('=================================================================');
+  return lines.join('\n');
+}
+
+/** Confirmation printed right after `conductor delegate <category>`. */
+export function renderDelegationGrant(d: Delegation, now: number): string {
+  const lines: string[] = [
+    '=================================================================',
+    '                   CONDUCTOR — DELEGATION GRANTED              ',
+    '=================================================================',
+    `Delegated category "${d.category}" — covered actions now run without interrupting you.`,
+    `  id:       ${d.id}`,
+    `  scope:    ${d.scope === 'execution' ? `execution ${d.executionId}` : 'workspace (every execution on this plane)'}`,
+    `  covers:   ${d.resourcePattern ? `actions whose command/path contains "${d.resourcePattern}"` : 'the whole category'}`,
+    `  granted:  by ${d.grantedBy} at ${new Date(d.grantedAt).toISOString()}`,
+    `  expires:  ${
+      d.expiresAt == null
+        ? 'never — revoke to end it'
+        : `${new Date(d.expiresAt).toISOString()} (in ${formatDuration(Math.max(0, d.expiresAt - now))})`
+    }`,
+  ];
+  if (d.note) lines.push(`  note:     ${d.note}`);
+  lines.push('');
+  lines.push(`Revoke with:  conductor delegations --revoke ${d.id}`);
+  lines.push('=================================================================');
+  return lines.join('\n');
+}
+
+export interface DelegationOfferView {
+  category: string;
+  accepted: number;
+  rejected: number;
+  sampleTitles: string[];
+  offer: string;
+}
+
+/** Recurrence offers — these OFFER only; nothing is granted from here. */
+export function renderDelegationOffers(offers: DelegationOfferView[]): string {
+  const lines: string[] = [
+    '=================================================================',
+    '                  CONDUCTOR — DELEGATION OFFERS                ',
+    '=================================================================',
+  ];
+  if (offers.length === 0) {
+    lines.push('No recurring approvals worth delegating yet.');
+    lines.push('(This only offers — nothing is ever granted automatically.)');
+    lines.push('=================================================================');
+    return lines.join('\n');
+  }
+  lines.push('You keep approving the same kind of thing. Consider delegating it:');
+  lines.push('');
+  for (const o of offers) {
+    lines.push(`  ${o.category} — ${String(o.accepted)} accepted, ${String(o.rejected)} rejected`);
+    for (const t of o.sampleTitles) lines.push(`    · ${t}`);
+    lines.push(`    ${o.offer}`);
+    lines.push(`    grant with: conductor delegate ${o.category}`);
+    lines.push('');
+  }
+  lines.push('These are OFFERS ONLY — nothing above changed any authority.');
+  lines.push('=================================================================');
+  return lines.join('\n');
+}
