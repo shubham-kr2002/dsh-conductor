@@ -32,6 +32,7 @@ import { statusLanguage } from '../summary/status-language.js';
 import { rollupDecisionQuality } from '../decision/decision-quality.js';
 import { startConductorUi } from '../ui/server.js';
 import { runDemoScenario } from '../demo/scenario.js';
+import { runDemoAttention } from '../demo/attention-os.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { renderHandoffBrief } from '../handoff/handoff-service.js';
@@ -450,6 +451,41 @@ program
     }
   });
 
+
+program
+  .command('demo:os')
+  .description("Deterministic 5-agent 'Attention OS' story: suppression, batching, delegation, the budget, return-to-work")
+  .option('-w, --workspace <path>', 'Workspace root for the story', process.cwd())
+  .option('--db <path>', 'Demo control-plane SQLite file (default <workspace>/.conductor-demo/attention.db)')
+  .option('--start <iso>', 'Fictional story start (ISO datetime)')
+  .option('-q, --quiet', 'Print only the final screen')
+  .action(async (options) => {
+    let now: number | undefined;
+    if (options.start) {
+      now = Date.parse(options.start);
+      if (Number.isNaN(now)) {
+        console.error('Error: --start must be an ISO datetime');
+        process.exit(1);
+      }
+    }
+    try {
+      const result = await runDemoAttention({
+        workspaceRoot: options.workspace,
+        ...(options.db ? { dbPath: options.db } : {}),
+        ...(now !== undefined ? { now } : {}),
+        ...(options.quiet ? { log: () => {} } : {}),
+      });
+      console.log('');
+      for (const line of result.finalScreen) console.log(line);
+      console.log('');
+      console.log(`Control plane left intact at: ${result.dbPath}`);
+      console.log(`See the cockpit:  conductor ui --db ${result.dbPath}   (one item still needs you)`);
+      console.log(`Or in the terminal:  conductor attention --db ${result.dbPath}`);
+    } catch (err) {
+      console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+  });
 program
   .command('init')
   .description('Scaffold .conductor/ with a ready-to-mount DSH plugin config')
